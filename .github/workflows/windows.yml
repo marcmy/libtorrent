@@ -1,5 +1,7 @@
 name: Windows
 
+permissions: read-all
+
 on:
    push:
       branches: [ RC_1_2 RC_2_0 master ]
