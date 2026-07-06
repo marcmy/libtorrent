@@ -1,5 +1,7 @@
 name: Android
 
+permissions: read-all
+
 on:
    push:
       branches: [ RC_2_0 master ]

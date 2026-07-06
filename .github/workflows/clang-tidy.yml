@@ -1,5 +1,7 @@
 name: clang-tidy
 
+permissions: read-all
+
 on:
    push:
       branches: [ RC_1_2 RC_2_0 master ]
@@ -46,6 +48,3 @@ jobs:
       - name: analyze
         run: |
           b2 -a clang_tidy webtorrent=on
-
-
-

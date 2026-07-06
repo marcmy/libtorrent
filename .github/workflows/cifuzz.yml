@@ -1,4 +1,7 @@
 name: CIFuzz
+
+permissions: read-all
+
 on: [pull_request]
 jobs:
   Fuzzing:

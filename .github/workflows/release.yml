@@ -1,5 +1,7 @@
 name: Release
 
+permissions: read-all
+
 on:
    push:
       branches: [ RC_2_0, RC_2_1, master ]
@@ -32,10 +34,10 @@ jobs:
 
       - uses: Chocobo1/setup-ccache-action@v1
         with:
-          update_packager_index: false
-          override_cache_key: ccache-linux-dist-${{ github.base_ref || github.ref_name }}
-          ccache_options: |
-            max_size=15G
+           update_packager_index: false
+           override_cache_key: ccache-linux-dist-${{ github.base_ref || github.ref_name }}
+           ccache_options: |
+             max_size=15G
 
       - name: install dependencies
         run: |
@@ -60,8 +62,8 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: tarball
-          path: libtorrent-rasterbar-*.tar.gz
+           name: tarball
+           path: libtorrent-rasterbar-*.tar.gz
 
       - name: test-tarball (b2 install)
         run: |
@@ -92,8 +94,8 @@ jobs:
       steps:
       - uses: actions/download-artifact@v6
         with:
-          name: tarball
-          path: dist
+           name: tarball
+           path: dist
 
       - name: upload release asset
         env:

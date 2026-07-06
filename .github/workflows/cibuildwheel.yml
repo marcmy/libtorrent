@@ -1,5 +1,7 @@
 name: cibuildwheel
 
+permissions: read-all
+
 # Note: We use a dynamic matrix to build different sets of wheels under
 # different conditions. On workflow_dispatch, we build the full suite of
 # wheels. This takes hours, so on pull_request, we just build a representative
