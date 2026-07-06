@@ -8,7 +8,7 @@ import base64
 import socket
 import traceback
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -28,14 +28,23 @@ except Exception:
 
 
 def resolve_test_file(request_target):
-    """Resolve a request to an existing file directly under the test directory."""
-    name = urlsplit(request_target).path.removeprefix('/')
-    if not name or name in ('.', '..') or '/' in name or '\\' in name:
+    """Resolve a request to an existing file contained by the test directory."""
+    name = unquote(urlsplit(request_target).path).lstrip('/')
+    if not name:
         raise FileNotFoundError(name)
 
-    # Select from paths discovered from the test directory rather than joining
-    # an attacker-controlled request path to the filesystem root.
-    files = {entry.name: entry for entry in test_root.iterdir() if entry.is_file()}
+    # Select a filesystem-discovered path by its relative name. The request is
+    # used only as a dictionary key and is never joined into a filesystem path.
+    files = {}
+    for entry in test_root.rglob('*'):
+        resolved = entry.resolve()
+        try:
+            resolved.relative_to(test_root)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            files[entry.relative_to(test_root).as_posix()] = resolved
+
     try:
         return files[name]
     except KeyError as exc:
