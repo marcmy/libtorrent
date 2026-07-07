@@ -29,26 +29,37 @@ except Exception:
 
 def resolve_test_file(request_target):
     """Resolve a request to an existing file contained by the test directory."""
-    name = unquote(urlsplit(request_target).path).lstrip('/')
-    if not name:
-        raise FileNotFoundError(name)
-
-    # Select a filesystem-discovered path by its relative name. The request is
-    # used only as a dictionary key and is never joined into a filesystem path.
-    files = {}
-    for entry in test_root.rglob('*'):
-        resolved = entry.resolve()
-        try:
-            resolved.relative_to(test_root)
-        except ValueError:
+    path = unquote(urlsplit(request_target).path)
+    parts = []
+    for part in path.split('/'):
+        if not part or part == '.':
             continue
-        if resolved.is_file():
-            files[entry.relative_to(test_root).as_posix()] = resolved
+        if '\\' in part:
+            raise FileNotFoundError(path)
+        if part == '..':
+            if not parts:
+                raise FileNotFoundError(path)
+            parts.pop()
+        else:
+            parts.append(part)
 
-    try:
-        return files[name]
-    except KeyError as exc:
-        raise FileNotFoundError(name) from exc
+    if not parts:
+        raise FileNotFoundError(path)
+
+    # Walk only through filesystem-discovered entries. Request path components
+    # are compared as names and are never used to construct a filesystem path.
+    current = test_root
+    for part in parts:
+        try:
+            current = next(entry for entry in current.iterdir()
+                           if entry.name == part).resolve()
+            current.relative_to(test_root)
+        except (OSError, RuntimeError, StopIteration, ValueError) as exc:
+            raise FileNotFoundError(path) from exc
+
+    if not current.is_file():
+        raise FileNotFoundError(path)
+    return current
 
 
 class http_server_with_timeout(HTTPServer):
