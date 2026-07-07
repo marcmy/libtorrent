@@ -1,0 +1,57 @@
+name: Sync upstream chain
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync libtorrent, then trigger qBittorrent
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+
+    steps:
+      - name: Check out fork RC_2_1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: RC_2_1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch upstream RC_2_1
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/arvidn/libtorrent.git
+          git fetch --prune --no-tags upstream RC_2_1
+
+      - name: Merge upstream RC_2_1
+        id: sync
+        run: |
+          if git merge-base --is-ancestor upstream/RC_2_1 HEAD; then
+            echo "libtorrent RC_2_1 is already current with upstream."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git merge --no-edit upstream/RC_2_1
+            git push origin HEAD:RC_2_1
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger qBittorrent upstream sync
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-upstream-synced
+          client-payload: >-
+            {"libtorrent_sha":"${{ steps.sync.outputs.head_sha }}","libtorrent_changed":"${{ steps.sync.outputs.changed }}"}
