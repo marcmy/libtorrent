@@ -30,8 +30,20 @@ except Exception:
 def resolve_test_file(request_target):
     """Resolve a request to an existing file contained by the test directory."""
     path = unquote(urlsplit(request_target).path)
-    parts = [part for part in path.split('/') if part]
-    if not parts or any(part in ('.', '..') or '\\' in part for part in parts):
+    parts = []
+    for part in path.split('/'):
+        if not part or part == '.':
+            continue
+        if '\\' in part:
+            raise FileNotFoundError(path)
+        if part == '..':
+            if not parts:
+                raise FileNotFoundError(path)
+            parts.pop()
+        else:
+            parts.append(part)
+
+    if not parts:
         raise FileNotFoundError(path)
 
     # Walk only through filesystem-discovered entries. Request path components
