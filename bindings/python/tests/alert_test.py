@@ -695,7 +695,11 @@ class TrackerAlertTest(TorrentAlertTest):
         )
         ctx = self.get_tracker_ssl_ctx()
         if ctx is not None:
-            self.tracker.socket = ctx.wrap_socket(self.tracker.socket, server_side=True)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            self.tracker.socket = ctx.wrap_socket(
+                self.tracker.socket,
+                server_side=True,
+            )
         self.tracker_thread = threading.Thread(target=self.tracker.serve_forever)
         self.tracker_thread.start()
         # HTTPServer.server_name seems to resolve to things like
