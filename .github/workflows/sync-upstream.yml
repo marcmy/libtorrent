@@ -5,8 +5,7 @@ on:
     - cron: '17 */6 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: sync-upstream
@@ -14,9 +13,13 @@ concurrency:
 
 jobs:
   sync:
-    name: Sync libtorrent, then trigger qBittorrent
+    name: Sync libtorrent RC_2_1
     runs-on: ubuntu-latest
-    environment: qbittorrent-sync
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      head_sha: ${{ steps.sync.outputs.head_sha }}
 
     steps:
       - name: Check out fork RC_2_1
@@ -47,11 +50,19 @@ jobs:
 
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Trigger qBittorrent upstream sync
+  dispatch-qbittorrent:
+    name: Trigger qBittorrent upstream sync
+    needs: sync
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch qBittorrent sync
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
           repository: marcmy/qBittorrent
           event-type: libtorrent-upstream-synced
           client-payload: >-
-            {"libtorrent_sha":"${{ steps.sync.outputs.head_sha }}","libtorrent_changed":"${{ steps.sync.outputs.changed }}"}
+            {"libtorrent_sha":"${{ needs.sync.outputs.head_sha }}","libtorrent_changed":"${{ needs.sync.outputs.changed }}"}
