@@ -27,7 +27,7 @@ jobs:
         with:
           ref: RC_2_1
           fetch-depth: 0
-          persist-credentials: true
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
 
       - name: Fetch upstream RC_2_1
         run: |
