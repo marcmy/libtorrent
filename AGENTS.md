@@ -2,7 +2,7 @@
 
 This repository is `marcmy/libtorrent`, the engine half of a coordinated custom qBittorrent + libtorrent project.
 
-Read [FORK.md] before changing engine behavior. The canonical working baseline is `RC_2_1`, consumed by `marcmy/qBittorrent:master` or a matching feature branch.
+Read [FORK.md] before changing engine behavior. The canonical working baseline is `custom/qbittorrent-2.1`, consumed by `marcmy/qBittorrent:custom/master` or a matching feature branch.
 
 Before implementing a feature or fix, determine whether the root behavior belongs to libtorrent, qBittorrent, or both. Engine and protocol behavior belongs here; GUI, application preferences, packaging and presentation belong in qBittorrent.
 
@@ -14,11 +14,13 @@ Internal branches and same-fork pull requests in `marcmy/libtorrent` may be crea
 
 ## Branch roles
 
-- `RC_2_1`: normal base for this project and the default branch
+- `custom/qbittorrent-2.1`: active base for this project and the default branch
+- `upstream/RC_2_1`: pristine mirror of `arvidn/libtorrent:RC_2_1`
+- `RC_2_1`: legacy rollback point for the former custom lane
 - `RC_2_0`: compatibility research and deliberate backports only
 - `master`: future-development comparison and integration only
 
-Do not silently retarget routine qBittorrent builds away from `RC_2_1`.
+Do not silently retarget routine qBittorrent builds away from `custom/qbittorrent-2.1`.
 
 ## Review priorities
 
