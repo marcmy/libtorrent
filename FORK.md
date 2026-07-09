@@ -4,12 +4,12 @@ This fork is the engine half of a coordinated qBittorrent + libtorrent project.
 
 ## Canonical baseline
 
-- Working branch: `RC_2_1`
+- Working branch: `custom/qbittorrent-2.1`
 - Consumer repository: `marcmy/qBittorrent`
-- Consumer baseline: `master`
-- Routine custom qBittorrent builds must use this fork's `RC_2_1` branch or an explicitly named feature branch based on it.
+- Consumer baseline: `custom/master`
+- Routine custom qBittorrent builds must use this fork's `custom/qbittorrent-2.1` branch, an exact commit from it, or an explicitly named feature branch based on it.
 
-`RC_2_0` is retained only for compatibility research or deliberate backports. `master` is retained for future-development comparison and integration work. Neither branch should silently replace `RC_2_1` in the daily-driver qBittorrent build.
+`upstream/RC_2_1` is the pristine mirror of `arvidn/libtorrent:RC_2_1`; `custom/qbittorrent-2.1` is the active engine branch. The former `RC_2_1` custom lane is retained as a rollback point. `RC_2_0` remains for compatibility research or deliberate backports, while `master` remains for future-development comparison. None should silently replace the active custom branch in daily-driver builds.
 
 ## Ownership rule
 
@@ -32,7 +32,7 @@ A coordinated change belongs in both repositories when this engine needs a new s
 
 ## Branch and integration method
 
-1. Branch from `RC_2_1` for normal custom engine work.
+1. Branch from `custom/qbittorrent-2.1` for normal custom engine work.
 2. Use the same branch slug in `marcmy/qBittorrent` when both repositories change.
 3. Keep engine changes independently testable and avoid qBittorrent-specific policy inside libtorrent unless the capability is generally appropriate at the engine layer.
 4. Record the exact qBittorrent counterpart branch or commit in coordinated work.
