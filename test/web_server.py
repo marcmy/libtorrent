@@ -316,7 +316,7 @@ if __name__ == '__main__':
     print('python version: %s' % sys.version_info.__str__())
 
     http_handler.protocol_version = 'HTTP/1.1'
-    httpd = http_server_with_timeout(('127.0.0.1', port), http_handler)
+    httpd = http_server_with_timeout(('0.0.0.0', port), http_handler)
     if use_ssl:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
