@@ -72,7 +72,23 @@ jobs:
             echo "custom/qbittorrent-2.1 already contains current upstream RC_2_1."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            git merge --no-edit source/RC_2_1
+            if ! git merge --no-edit source/RC_2_1; then
+              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+
+              if (( ${#conflicts[@]} != 1 )) || \
+                [[ "${conflicts[0]:-}" != ".github/workflows/linux.yml" ]]; then
+                echo "Unexpected upstream merge conflict(s):" >&2
+                printf '  %s\n' "${conflicts[@]}" >&2
+                git merge --abort
+                exit 1
+              fi
+
+              echo "Preserving the fork's intentionally disabled Linux workflow."
+              git checkout --ours -- .github/workflows/linux.yml
+              git add .github/workflows/linux.yml
+              git commit --no-edit
+            fi
+
             git push origin HEAD:refs/heads/custom/qbittorrent-2.1
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
