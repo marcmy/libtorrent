@@ -11,7 +11,8 @@ concurrency:
 
 jobs:
 
-   # tracks benchmark history for the base branches themselves.
+   # Tracks benchmark history for the base branches themselves. Forks without
+   # Bencher credentials still build the benchmark tools but skip reporting.
    tools:
       name: tools
       if: github.event_name == 'push'
@@ -19,6 +20,8 @@ jobs:
       permissions:
          contents: read
          checks: write
+      env:
+         BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
 
       steps:
       - name: checkout
@@ -52,23 +55,30 @@ jobs:
 
       - uses: bencherdev/bencher@v0.6.8
 
+      - name: Skip benchmark tracking when unconfigured
+        if: env.BENCHER_API_KEY == ''
+        run: echo "::notice::BENCHER_API_KEY is not configured; skipping Bencher reporting."
+
       - name: track benchmarks
+        if: env.BENCHER_API_KEY != ''
+        env:
+          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           cd tools
           bencher run \
             --project libtorrent \
-            --key '${{ secrets.BENCHER_API_KEY }}' \
+            --key "$BENCHER_API_KEY" \
             --branch '${{ github.ref_name }}' \
             --testbed ubuntu-24.04 \
             --adapter json \
             --error-on-alert \
-            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            --github-actions "$GITHUB_ACTIONS_TOKEN" \
             ./bencher
 
-   # compares PR benchmark results against their target branch. Skipped for
-   # forked PRs, since they don't have access to the secrets below. Never
-   # fails the PR: alerts are surfaced via the GitHub check/PR comment (see
-   # --github-actions) but --error-on-alert is intentionally omitted.
+   # Compares PR benchmark results against their target branch. Skipped for
+   # forked PRs, since they don't have access to the secrets below. Reporting
+   # failures never fail the PR; benchmark alerts still surface through the
+   # GitHub check/PR comment when Bencher is configured.
    tools-pr:
       name: tools (PR)
       if: >
@@ -79,6 +89,8 @@ jobs:
          contents: read
          checks: write
          pull-requests: write
+      env:
+         BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
 
       steps:
       - name: checkout
@@ -112,12 +124,20 @@ jobs:
 
       - uses: bencherdev/bencher@v0.6.8
 
+      - name: Skip benchmark tracking when unconfigured
+        if: env.BENCHER_API_KEY == ''
+        run: echo "::notice::BENCHER_API_KEY is not configured; skipping Bencher reporting."
+
       - name: track benchmarks
+        if: env.BENCHER_API_KEY != ''
+        continue-on-error: true
+        env:
+          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           cd tools
           bencher run \
             --project libtorrent \
-            --key '${{ secrets.BENCHER_API_KEY }}' \
+            --key "$BENCHER_API_KEY" \
             --branch '${{ github.head_ref }}' \
             --start-point '${{ github.base_ref }}' \
             --start-point-hash '${{ github.event.pull_request.base.sha }}' \
@@ -125,5 +145,5 @@ jobs:
             --start-point-reset \
             --testbed ubuntu-24.04 \
             --adapter json \
-            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            --github-actions "$GITHUB_ACTIONS_TOKEN" \
             ./bencher
