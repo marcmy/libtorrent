@@ -1,6 +1,11 @@
 name: Sync upstream chain
 
 on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/sync-upstream.yml
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -13,14 +18,14 @@ concurrency:
 
 jobs:
   sync:
-    name: Mirror and merge libtorrent RC_2_1
+    name: Merge libtorrent RC_2_1
     runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
       changed: ${{ steps.sync.outputs.changed }}
-      mirror_changed: ${{ steps.mirror.outputs.changed }}
       head_sha: ${{ steps.sync.outputs.head_sha }}
+      source_sha: ${{ steps.sync.outputs.source_sha }}
 
     steps:
       - name: Check out custom libtorrent branch
@@ -28,86 +33,78 @@ jobs:
         with:
           ref: custom/qbittorrent-2.1
           fetch-depth: 0
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          token: ${{ github.token }}
           persist-credentials: true
 
-      - name: Fetch source and mirror branches
+      - name: Fetch upstream libtorrent RC_2_1
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add source https://github.com/arvidn/libtorrent.git
           git fetch --prune --no-tags source RC_2_1
-          git fetch --no-tags origin \
-            +refs/heads/upstream/RC_2_1:refs/remotes/origin/upstream/RC_2_1
 
-      - name: Update pristine upstream mirror
-        id: mirror
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          source_sha="$(git rev-parse source/RC_2_1)"
-          mirror_sha="$(git rev-parse origin/upstream/RC_2_1)"
-
-          if [[ "$source_sha" == "$mirror_sha" ]]; then
-            echo "upstream/RC_2_1 already matches arvidn/libtorrent:RC_2_1."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            git push \
-              --force-with-lease="refs/heads/upstream/RC_2_1:$mirror_sha" \
-              origin \
-              source/RC_2_1:refs/heads/upstream/RC_2_1
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "head_sha=$source_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Merge mirror into custom branch
+      - name: Merge upstream while preserving fork workflows
         id: sync
         shell: bash
         run: |
           set -euo pipefail
 
+          source_sha="$(git rev-parse source/RC_2_1)"
+          original_head="$(git rev-parse HEAD)"
+
           if git merge-base --is-ancestor source/RC_2_1 HEAD; then
             echo "custom/qbittorrent-2.1 already contains current upstream RC_2_1."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            if ! git merge --no-edit source/RC_2_1; then
-              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            merge_status=0
+            git merge --no-commit --no-ff source/RC_2_1 || merge_status=$?
 
-              if (( ${#conflicts[@]} != 1 )) || \
-                [[ "${conflicts[0]:-}" != ".github/workflows/linux.yml" ]]; then
-                echo "Unexpected upstream merge conflict(s):" >&2
-                printf '  %s\n' "${conflicts[@]}" >&2
-                git merge --abort
-                exit 1
-              fi
-
-              echo "Preserving the fork's intentionally disabled Linux workflow."
-              git checkout --ours -- .github/workflows/linux.yml
-              git add .github/workflows/linux.yml
-              git commit --no-edit
+            # Replace the entire workflow directory with the exact tree from
+            # the fork before the merge. This prevents upstream workflow-file
+            # changes from requiring a token with workflow scope or launching
+            # unrelated upstream CI in the fork.
+            git rm -r -f --ignore-unmatch .github/workflows
+            if git cat-file -e "$original_head:.github/workflows" 2>/dev/null; then
+              git checkout "$original_head" -- .github/workflows
             fi
 
+            unresolved="$(git diff --name-only --diff-filter=U)"
+            if [[ -n "$unresolved" ]]; then
+              echo "::error::Unresolved upstream merge conflicts remain outside .github/workflows:"
+              printf '%s\n' "$unresolved"
+              exit 1
+            fi
+
+            if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "::error::git merge failed without creating a resolvable merge state."
+              exit "$merge_status"
+            fi
+
+            if ! git diff --quiet "$original_head" -- .github/workflows; then
+              echo "::error::Fork workflow files changed during the upstream merge."
+              git diff "$original_head" -- .github/workflows
+              exit 1
+            fi
+
+            git commit --no-edit
             git push origin HEAD:refs/heads/custom/qbittorrent-2.1
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Summarize libtorrent sync
         env:
-          MIRROR_CHANGED: ${{ steps.mirror.outputs.changed }}
-          MIRROR_HEAD: ${{ steps.mirror.outputs.head_sha }}
+          SOURCE_HEAD: ${{ steps.sync.outputs.source_sha }}
           CUSTOM_CHANGED: ${{ steps.sync.outputs.changed }}
           CUSTOM_HEAD: ${{ steps.sync.outputs.head_sha }}
         run: |
           {
             echo "## libtorrent upstream sync"
-            echo "- Mirror changed: $MIRROR_CHANGED"
-            echo "- Mirror head: $MIRROR_HEAD"
+            echo "- Upstream RC_2_1 head: $SOURCE_HEAD"
             echo "- Custom branch changed: $CUSTOM_CHANGED"
-            echo "- Custom head: $CUSTOM_HEAD"
+            echo "- Custom branch head: $CUSTOM_HEAD"
           } >> "$GITHUB_STEP_SUMMARY"
 
   dispatch-qbittorrent:
