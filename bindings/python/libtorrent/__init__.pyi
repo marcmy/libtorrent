@@ -579,7 +579,7 @@ class alert(metaclass=_BoostBaseClass):
 
     class category_t(metaclass=_BoostBaseClass):
         __instance_size__: int
-        all_categories: Literal[4294967295]
+        all_categories: int
         block_progress_notification: Literal[16777216]
         connect_notification: Literal[32]
         debug_notification: Literal[32]
@@ -1911,6 +1911,10 @@ class io_buffer_mode_t(int):
         2: io_buffer_mode_t.disable_os_cache,  # noqa: F821
         3: io_buffer_mode_t.write_through,  # noqa: F821
     }
+
+class ip_ban_alert(alert):
+    @property
+    def banned_address(self) -> str: ...
 
 class ip_filter(metaclass=_BoostBaseClass):
     __instance_size__: int
