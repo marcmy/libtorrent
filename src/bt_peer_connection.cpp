@@ -206,10 +206,13 @@ namespace {
 				out_policy = settings_pack::pe_disabled;
 #endif
 #ifndef TORRENT_DISABLE_LOGGING
-		static char const* policy_name[] = {"forced", "enabled", "disabled", "invalid-setting"};
-		int const policy_name_idx = out_policy > 3 ? 3 : out_policy;
-		peer_log(peer_log_alert::info, peer_log_alert::encryption
-			, "outgoing encryption policy: %s", policy_name[policy_name_idx]);
+		// session_impl::sanitize_settings() guarantees this is one of
+		// pe_forced, pe_enabled or pe_disabled
+		static char const* policy_name[] = {"forced", "enabled", "disabled"};
+		peer_log(peer_log_alert::info,
+			peer_log_alert::encryption,
+			"outgoing encryption policy: %s",
+			policy_name[out_policy]);
 #endif
 
 		if (out_policy == settings_pack::pe_forced)
@@ -620,11 +623,11 @@ namespace {
 		// write the verification constant and crypto field
 		int const encrypt_size = int(sizeof(msg)) - 512 + pad_size - 40;
 
-		// this is an invalid setting, but let's just make the best of the situation
+		// session_impl::sanitize_settings() guarantees this is one of
+		// pe_plaintext, pe_rc4 or pe_both
 		int const enc_level = m_settings.get_int(settings_pack::allowed_enc_level);
-		std::uint8_t const crypto_provide = ((enc_level & settings_pack::pe_both) == 0)
-			? std::uint8_t(settings_pack::pe_both)
-			: std::uint8_t(enc_level);
+		TORRENT_ASSERT_PRECOND(enc_level & settings_pack::pe_both);
+		auto const crypto_provide = std::uint8_t(enc_level);
 
 #ifndef TORRENT_DISABLE_LOGGING
 		static char const* level[] = {"plaintext", "rc4", "plaintext rc4"};
