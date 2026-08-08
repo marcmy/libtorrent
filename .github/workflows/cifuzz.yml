@@ -1,8 +1,10 @@
-name: CIFuzz
+name: CIFuzz (disabled)
 
 permissions: read-all
 
-on: [pull_request]
+on:
+  workflow_dispatch:
+
 jobs:
   Fuzzing:
     runs-on: ubuntu-latest
