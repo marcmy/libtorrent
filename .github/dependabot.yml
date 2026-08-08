@@ -7,3 +7,5 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "America/New_York"
+    ignore:
+      - dependency-name: "pypa/cibuildwheel"
