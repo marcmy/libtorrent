@@ -1,17 +1,9 @@
-name: cppcheck
+name: cppcheck (manual)
 
 permissions: read-all
 
 on:
-   push:
-      branches: [ RC_2_1, master ]
-   pull_request:
-      paths:
-      - src/**
-      - include/**
-      - examples/**
-      - simulations/**
-      - tools/**
+   workflow_dispatch:
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
