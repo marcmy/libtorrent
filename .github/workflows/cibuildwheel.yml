@@ -1,80 +1,60 @@
-name: cibuildwheel
+name: cibuildwheel (manual)
 
 permissions: read-all
 
-# This fork only publishes/validates Windows wheels. Keep PR validation small,
-# while workflow_dispatch and release tags build the full supported Windows set.
+# Windows wheel building/publishing is retained as an on-demand maintenance
+# workflow, but it does not run automatically for this qBittorrent-focused fork.
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Write 'PUBLISH' to publish to pypi. BEWARE! ARTIFACTS ARE IMMUTABLE AND CANNOT BE REPLACED ONCE PUBLISHED!
+        description: Write 'PUBLISH' to publish to PyPI. BEWARE! ARTIFACTS ARE IMMUTABLE AND CANNOT BE REPLACED ONCE PUBLISHED!
       publish_test:
-        description: Write 'PUBLISH_TEST' to publish to test-pypi. BEWARE! ARTIFACTS ARE IMMUTABLE AND CANNOT BE REPLACED ONCE PUBLISHED!
-
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
-
-  pull_request:
-    paths:
-      - .github/workflows/cibuildwheel.yml
-      - bindings/python/__init__.pyi
-      - tools/cibuildwheel/**
-      - pyproject.toml
+        description: Write 'PUBLISH_TEST' to publish to TestPyPI. BEWARE! ARTIFACTS ARE IMMUTABLE AND CANNOT BE REPLACED ONCE PUBLISHED!
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
-  configure_matrix:
-    runs-on: ubuntu-latest
-    env:
-      MATRIX_PULL_REQUEST: |
-        {
-          "include": [
-            {"os": "windows-2022", "CIBW_BUILD": "cp39-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp39-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"}
-          ]
-        }
-      MATRIX_WORKFLOW_DISPATCH: |
-        {
-          "include": [
-            {"os": "windows-2022", "CIBW_BUILD": "cp39-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp310-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp311-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp312-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp313-win32", "CIBW_ARCHS_WINDOWS": "x86"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp39-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp310-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp311-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp312-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"},
-            {"os": "windows-2022", "CIBW_BUILD": "cp313-win_amd64", "CIBW_ARCHS_WINDOWS": "AMD64"}
-          ]
-        }
-
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-
-    steps:
-      - id: set-matrix
-        shell: bash
-        run: |
-          if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
-            echo "matrix=$(echo "$MATRIX_PULL_REQUEST" | jq -c)" >> "$GITHUB_OUTPUT"
-          else
-            echo "matrix=$(echo "$MATRIX_WORKFLOW_DISPATCH" | jq -c)" >> "$GITHUB_OUTPUT"
-          fi
-
   build_wheels:
-    needs: configure_matrix
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.configure_matrix.outputs.matrix) }}
+      matrix:
+        include:
+          - os: windows-2022
+            CIBW_BUILD: cp39-win32
+            CIBW_ARCHS_WINDOWS: x86
+          - os: windows-2022
+            CIBW_BUILD: cp310-win32
+            CIBW_ARCHS_WINDOWS: x86
+          - os: windows-2022
+            CIBW_BUILD: cp311-win32
+            CIBW_ARCHS_WINDOWS: x86
+          - os: windows-2022
+            CIBW_BUILD: cp312-win32
+            CIBW_ARCHS_WINDOWS: x86
+          - os: windows-2022
+            CIBW_BUILD: cp313-win32
+            CIBW_ARCHS_WINDOWS: x86
+          - os: windows-2022
+            CIBW_BUILD: cp39-win_amd64
+            CIBW_ARCHS_WINDOWS: AMD64
+          - os: windows-2022
+            CIBW_BUILD: cp310-win_amd64
+            CIBW_ARCHS_WINDOWS: AMD64
+          - os: windows-2022
+            CIBW_BUILD: cp311-win_amd64
+            CIBW_ARCHS_WINDOWS: AMD64
+          - os: windows-2022
+            CIBW_BUILD: cp312-win_amd64
+            CIBW_ARCHS_WINDOWS: AMD64
+          - os: windows-2022
+            CIBW_BUILD: cp313-win_amd64
+            CIBW_ARCHS_WINDOWS: AMD64
 
     env:
       CIBW_BUILD_VERBOSITY: 1
@@ -110,7 +90,7 @@ jobs:
         uses: microsoft/setup-msbuild@v3
 
       - uses: pypa/cibuildwheel@v2.23.4
-        if: ${{ steps.cache-wheel.outputs.cache-hit != 'true' || github.event_name == 'pull_request' }}
+        if: steps.cache-wheel.outputs.cache-hit != 'true'
 
       - uses: actions/upload-artifact@v7
         with:
@@ -178,31 +158,3 @@ jobs:
           packages-dir: wheelhouse
           skip-existing: true
           repository-url: https://test.pypi.org/legacy/
-
-  upload_release:
-    needs: build_wheels
-    runs-on: ubuntu-latest
-    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: wheels-*
-          path: wheelhouse
-          merge-multiple: true
-
-      - name: upload wheels to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          shopt -s nullglob
-          wheels=(wheelhouse/*.whl)
-          if [ ${#wheels[@]} -eq 0 ]; then
-            echo "no wheels were built successfully, nothing to upload"
-            exit 0
-          fi
-          echo "uploading ${#wheels[@]} wheel(s)"
-          gh release upload "$GITHUB_REF_NAME" "${wheels[@]}" \
-            --clobber --repo "$GITHUB_REPOSITORY"
