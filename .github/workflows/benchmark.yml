@@ -50,7 +50,7 @@ jobs:
           cd tools
           b2 release warnings-as-errors=on stage
 
-      - uses: bencherdev/bencher@v0.6.8
+      - uses: bencherdev/bencher@v0.6.11
 
       - name: Skip benchmark tracking when unconfigured
         if: env.BENCHER_API_KEY == ''
