@@ -198,7 +198,7 @@ jobs:
         pattern: wheels-ubuntu-24.04-cp39-manylinux_x86_64
         path: wheelhouse
         merge-multiple: true
-    - uses: actions/setup-python@v6
+    - uses: actions/setup-python@v7
       with:
         python-version: '3.9'
     - name: test wheel type issues
