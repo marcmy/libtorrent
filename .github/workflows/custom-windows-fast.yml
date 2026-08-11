@@ -149,6 +149,7 @@ jobs:
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW `
             -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
             -DBUILD_SHARED_LIBS=OFF `
+            -Dbuild_tools=ON `
             -Ddeprecated-functions=OFF `
             -Dstatic_runtime=OFF `
             -DVCPKG_TARGET_TRIPLET=${{ env.vcpkg_triplet }} `
@@ -156,7 +157,8 @@ jobs:
 
       - name: Build and install
         run: |
-          cmake --build build --parallel
+          cmake --build build --target torrent-rasterbar --parallel
+          cmake --build build --target checking_benchmark checking_io_benchmark --parallel
           cmake --install build
 
       - name: Show sccache stats
@@ -171,3 +173,8 @@ jobs:
           path: |
             install
             build/compile_commands.json
+            build/tools/checking_benchmark.exe
+            build/tools/checking_benchmark.pdb
+            build/tools/checking_io_benchmark.exe
+            build/tools/checking_io_benchmark.pdb
+            tools/run_checking_matrix.ps1
