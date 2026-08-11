@@ -10,6 +10,11 @@ target_link_libraries(session_log_alerts PRIVATE torrent-rasterbar)
 add_executable(checking_benchmark checking_benchmark.cpp)
 target_link_libraries(checking_benchmark PRIVATE torrent-rasterbar)
 
+if (WIN32)
+	add_executable(checking_io_benchmark checking_io_benchmark.cpp)
+	target_link_libraries(checking_io_benchmark PRIVATE torrent-rasterbar)
+endif()
+
 add_executable(gen_torture_torrent gen_torture_torrent.cpp)
 target_link_libraries(gen_torture_torrent PRIVATE torrent-rasterbar)
 
