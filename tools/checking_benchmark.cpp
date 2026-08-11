@@ -1,6 +1,7 @@
 /*
 
-Copyright (c) 2022, Arvid Norberg
+Copyright (c) 2022-2026, Arvid Norberg
+Copyright (c) 2026, marcmy
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -30,169 +31,262 @@ POSSIBILITY OF SUCH DAMAGE.
 
 */
 
-#include <fstream>
-#include <iostream>
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
 
-#include "libtorrent/create_torrent.hpp"
-#include "libtorrent/session.hpp"
-#include "libtorrent/settings_pack.hpp"
-#include "libtorrent/load_torrent.hpp"
 #include "libtorrent/alert_types.hpp"
+#include "libtorrent/config.hpp"
+#include "libtorrent/load_torrent.hpp"
 #include "libtorrent/mmap_disk_io.hpp"
 #include "libtorrent/posix_disk_io.hpp"
+#include "libtorrent/pread_disk_io.hpp"
+#include "libtorrent/session.hpp"
+#include "libtorrent/settings_pack.hpp"
+#include "libtorrent/torrent_flags.hpp"
+#include "libtorrent/torrent_info.hpp"
 
-#include "libtorrent/aux_/path.hpp"
+using namespace std::chrono_literals;
 
-using namespace std::literals::chrono_literals;
-using std::chrono::milliseconds;
-
-namespace {
-
-void generate_block_fill(lt::span<char> buf, std::uint64_t& state)
+namespace
 {
-	int const tail = buf.size() % 8;
-	int offset = 0;
-	for (; offset < buf.size() - tail; offset += 8)
-	{
-		std::memcpy(buf.data() + offset, reinterpret_cast<char const*>(&state), 8);
-		++state;
-	}
-	if (tail > 0)
-	{
-		std::memcpy(buf.data() + offset, reinterpret_cast<char const*>(&state), tail);
-		++state;
-	}
-}
+    struct options
+    {
+        std::string torrent_file;
+        std::string save_path;
+        std::string backend = "default";
+        int hash_threads = 1;
+        int aio_threads = 10;
+        int checking_mib = 32;
+        int runs = 1;
+        int alert_timeout_seconds = 30;
+    };
 
-std::vector<char> generate_torrent(int num_pieces, std::string save_path
-	, lt::create_flags_t const flags)
-{
-	// 1 MiB piece size
-	const int piece_size = 1024 * 1024;
-	const std::int64_t total_size = std::int64_t(piece_size) * num_pieces + 2356;
+    [[noreturn]] void usage(char const* const program, int const exit_code)
+    {
+        std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
+        out
+            << "Usage:\n"
+            << "  " << program << " --torrent <file.torrent> --save-path <data-root> [options]\n\n"
+            << "Options:\n"
+            << "  --backend <default|pread|mmap|posix>  Disk I/O backend (default: default)\n"
+            << "  --hash-threads <n>                   Hashing threads (default: 1)\n"
+            << "  --aio-threads <n>                    General disk I/O threads (default: 10)\n"
+            << "  --checking-mib <MiB>                 Outstanding checking memory (default: 32)\n"
+            << "  --runs <n>                            Recheck repetitions in one session (default: 1)\n"
+            << "  --alert-timeout <seconds>             Alert wait interval (default: 30)\n"
+            << "  --help                                Show this help\n\n"
+            << "The benchmark uses real torrent data already present under --save-path.\n"
+            << "Each run emits one machine-readable line beginning with RESULT,.\n";
+        std::exit(exit_code);
+    }
 
-	std::string const filename = "test_checking_file";
+    int parse_positive_int(std::string const& value, std::string_view const name)
+    {
+        std::size_t consumed = 0;
+        int const parsed = std::stoi(value, &consumed);
+        if (consumed != value.size() || parsed <= 0)
+            throw std::invalid_argument(std::string(name) + " must be a positive integer");
+        return parsed;
+    }
 
-	std::vector<lt::create_file_entry> fs;
-	fs.emplace_back(filename, total_size);
+    options parse_options(int const argc, char const* const argv[])
+    {
+        options ret;
 
-	std::string const filepath = save_path + "/" + filename;
+        auto require_value = [&](int& index, std::string_view const name) -> std::string
+        {
+            if (++index >= argc)
+                throw std::invalid_argument(std::string(name) + " requires a value");
+            return argv[index];
+        };
 
-	lt::file_status st;
-	lt::error_code ec;
-	lt::stat_file(filepath, &st, ec);
-	if (ec && ec != boost::system::errc::no_such_file_or_directory)
-	{
-		std::cerr << "stat() failed: " << ec.message()
-			<< " for file: " << filepath << '\n';
-		std::exit(1);
-	}
-	if (st.file_size != total_size)
-	{
-		std::cout << "writing test file\n";
-		std::uint64_t state = 0;
-		std::ofstream output(filepath, std::ios_base::binary);
-		std::int64_t bytes_left = total_size;
-		std::array<char, 100000> buffer;
-		while (bytes_left > 0)
-		{
-			generate_block_fill(buffer, state);
-			output.write(buffer.data(), std::min(buffer.size(), std::size_t(bytes_left)));
-			bytes_left -= buffer.size();
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string const arg = argv[i];
+            if (arg == "--help" || arg == "-h")
+                usage(argv[0], 0);
+            else if (arg == "--torrent")
+                ret.torrent_file = require_value(i, arg);
+            else if (arg == "--save-path")
+                ret.save_path = require_value(i, arg);
+            else if (arg == "--backend")
+                ret.backend = require_value(i, arg);
+            else if (arg == "--hash-threads")
+                ret.hash_threads = parse_positive_int(require_value(i, arg), arg);
+            else if (arg == "--aio-threads")
+                ret.aio_threads = parse_positive_int(require_value(i, arg), arg);
+            else if (arg == "--checking-mib")
+                ret.checking_mib = parse_positive_int(require_value(i, arg), arg);
+            else if (arg == "--runs")
+                ret.runs = parse_positive_int(require_value(i, arg), arg);
+            else if (arg == "--alert-timeout")
+                ret.alert_timeout_seconds = parse_positive_int(require_value(i, arg), arg);
+            else
+                throw std::invalid_argument("unknown argument: " + arg);
+        }
 
-			std::cout << "\rleft: " << bytes_left << " B  ";
-			std::cout.flush();
-		}
-		std::cout << '\n';
-	}
+        if (ret.torrent_file.empty())
+            throw std::invalid_argument("--torrent is required");
+        if (ret.save_path.empty())
+            throw std::invalid_argument("--save-path is required");
 
-	lt::create_torrent t(std::move(fs), piece_size, flags);
+        if (ret.backend != "default" && ret.backend != "pread"
+            && ret.backend != "mmap" && ret.backend != "posix")
+            throw std::invalid_argument("--backend must be default, pread, mmap, or posix");
 
-	std::cout << "hashing torrent\n";
-	lt::set_piece_hashes(t, save_path);
+        return ret;
+    }
 
-	std::vector<char> ret;
-	bencode(std::back_inserter(ret), t.generate());
-	return ret;
-}
-
-void run_test(std::string const& save_path, lt::create_flags_t const flags
-	, lt::disk_io_constructor_type disk)
-{
-	auto const torrent_buf = generate_torrent(7000, save_path, flags);
-
-	std::cout << "drop caches now. e.g. \"echo 1 | sudo tee /proc/sys/vm/drop_caches\"\n";
-	std::cout << "press enter to continue\n";
-
-	char dummy;
-	std::cin.read(&dummy, 1);
-
-	lt::session_params params;
-	params.disk_io_constructor = disk;
-	auto& s = params.settings;
-	s.set_bool(lt::settings_pack::enable_dht, false);
-	s.set_bool(lt::settings_pack::enable_upnp, false);
-	s.set_bool(lt::settings_pack::enable_natpmp, false);
-	s.set_bool(lt::settings_pack::enable_lsd, false);
-	s.set_int(lt::settings_pack::hashing_threads, 1);
-	s.set_int(lt::settings_pack::alert_mask
-		, lt::alert_category::error | lt::alert_category::storage | lt::alert_category::status);
-	s.set_str(lt::settings_pack::listen_interfaces, "");
-
-	lt::session ses(params);
-	lt::add_torrent_params atp = lt::load_torrent_buffer(torrent_buf);
-	atp.save_path = save_path;
-	atp.flags &= ~(lt::torrent_flags::paused | lt::torrent_flags::auto_managed);
-	lt::torrent_handle h = ses.add_torrent(atp);
-	auto const start = lt::clock_type::now();
-	for (;;)
-	{
-		ses.wait_for_alert(5s);
-		std::vector<lt::alert*> alerts;
-		ses.pop_alerts(&alerts);
-		for (lt::alert const* a : alerts)
-		{
-			std::cout << a->message() << '\n';
-			if (auto const* sca = lt::alert_cast<lt::state_changed_alert>(a))
-			{
-				if (sca->state != lt::torrent_status::checking_files
-					&& sca->state != lt::torrent_status::checking_resume_data)
-					goto done;
-			}
-		}
-	}
-done:
-	auto const end = lt::clock_type::now();
-	std::cout << "\n\nduration: "
-		<< (std::chrono::duration_cast<milliseconds>(end - start).count() / 1000.)
-		<< "s\n";
-}
-
-}
-
-int main(int argc, char const* argv[]) try
-{
-	std::string save_path = ".";
-	if (argc > 1)
-		save_path = argv[1];
-
+    lt::disk_io_constructor_type disk_constructor(std::string const& backend)
+    {
+        if (backend == "pread") return lt::pread_disk_io_constructor;
+        if (backend == "posix") return lt::posix_disk_io_constructor;
 #if TORRENT_HAVE_MMAP || TORRENT_HAVE_MAP_VIEW_OF_FILE
-	run_test(save_path, lt::create_torrent::v1_only, lt::mmap_disk_io_constructor);
-	std::cout << "v1-only, mmap disk I/O\n\n";
-	run_test(save_path, lt::create_torrent::v2_only, lt::mmap_disk_io_constructor);
-	std::cout << "v2-only, mmap disk I/O\n\n";
-	run_test(save_path, {}, lt::mmap_disk_io_constructor);
-	std::cout << "hybrid, mmap disk I/O\n\n";
+        if (backend == "mmap") return lt::mmap_disk_io_constructor;
+#else
+        if (backend == "mmap")
+            throw std::runtime_error("mmap backend is not available in this build");
 #endif
-	run_test(save_path, lt::create_torrent::v1_only, lt::posix_disk_io_constructor);
-	std::cout << "v1-only, posix disk I/O\n\n";
-	run_test(save_path, lt::create_torrent::v2_only, lt::posix_disk_io_constructor);
-	std::cout << "v2-only, posix disk I/O\n\n";
-	run_test(save_path, {}, lt::posix_disk_io_constructor);
-	std::cout << "hybrid, posix disk I/O\n\n";
+        return lt::default_disk_io_constructor;
+    }
+
+    std::int64_t payload_bytes(lt::torrent_info const& ti)
+    {
+        std::int64_t total = 0;
+        auto const& files = ti.files();
+        for (lt::file_index_t const index : files.file_range())
+        {
+            if (!files.pad_file_at(index))
+                total += files.file_size(index);
+        }
+        return total;
+    }
+
+    void report_torrent_error(lt::alert const* const alert)
+    {
+        if (auto const* const error = lt::alert_cast<lt::torrent_error_alert>(alert))
+            throw std::runtime_error("torrent error: " + error->message());
+        if (auto const* const error = lt::alert_cast<lt::file_error_alert>(alert))
+            throw std::runtime_error("file error: " + error->message());
+    }
+
+    double wait_for_check(lt::session& session, lt::torrent_handle const& handle
+        , int const alert_timeout_seconds)
+    {
+        auto const start = std::chrono::steady_clock::now();
+
+        for (;;)
+        {
+            session.wait_for_alert(std::chrono::seconds(alert_timeout_seconds));
+            std::vector<lt::alert*> alerts;
+            session.pop_alerts(&alerts);
+
+            for (lt::alert const* const alert : alerts)
+            {
+                report_torrent_error(alert);
+
+                if (auto const* const checked = lt::alert_cast<lt::torrent_checked_alert>(alert))
+                {
+                    if (checked->handle == handle)
+                    {
+                        auto const end = std::chrono::steady_clock::now();
+                        return std::chrono::duration<double>(end - start).count();
+                    }
+                }
+            }
+        }
+    }
+
+    void print_result(options const& opts, int const run, double const seconds
+        , std::int64_t const bytes)
+    {
+        double const mib = static_cast<double>(bytes) / (1024.0 * 1024.0);
+        double const gib = mib / 1024.0;
+        double const mib_per_second = seconds > 0.0 ? (mib / seconds) : 0.0;
+
+        std::cout << std::fixed << std::setprecision(2)
+            << "run " << run << '/' << opts.runs
+            << ": " << seconds << " s, " << gib << " GiB, "
+            << mib_per_second << " MiB/s\n";
+
+        std::cout << std::setprecision(6)
+            << "RESULT," << opts.backend
+            << ',' << opts.hash_threads
+            << ',' << opts.aio_threads
+            << ',' << opts.checking_mib
+            << ',' << run
+            << ',' << seconds
+            << ',' << bytes
+            << ',' << mib_per_second
+            << '\n';
+    }
 }
-catch (lt::system_error const& e)
+
+int main(int const argc, char const* const argv[]) try
 {
-	std::cerr << "Failed: " << e.code().message() << '\n';
+    options const opts = parse_options(argc, argv);
+
+    lt::add_torrent_params atp = lt::load_torrent_file(opts.torrent_file);
+    if (!atp.ti || !atp.ti->is_valid())
+        throw std::runtime_error("torrent metadata is invalid");
+
+    std::int64_t const bytes = payload_bytes(*atp.ti);
+    if (bytes <= 0)
+        throw std::runtime_error("torrent contains no payload data to check");
+
+    lt::session_params params;
+    params.disk_io_constructor = disk_constructor(opts.backend);
+
+    auto& settings = params.settings;
+    settings.set_bool(lt::settings_pack::enable_dht, false);
+    settings.set_bool(lt::settings_pack::enable_upnp, false);
+    settings.set_bool(lt::settings_pack::enable_natpmp, false);
+    settings.set_bool(lt::settings_pack::enable_lsd, false);
+    settings.set_int(lt::settings_pack::hashing_threads, opts.hash_threads);
+    settings.set_int(lt::settings_pack::aio_threads, opts.aio_threads);
+    settings.set_int(lt::settings_pack::checking_mem_usage, opts.checking_mib * 64);
+    settings.set_int(lt::settings_pack::active_checking, 1);
+    settings.set_int(lt::settings_pack::alert_mask
+        , lt::alert_category::error
+        | lt::alert_category::storage
+        | lt::alert_category::status);
+    settings.set_str(lt::settings_pack::listen_interfaces, "");
+
+    lt::session session(std::move(params));
+
+    atp.save_path = opts.save_path;
+    atp.flags &= ~(lt::torrent_flags::paused | lt::torrent_flags::auto_managed);
+
+    std::cout
+        << "torrent:      " << opts.torrent_file << '\n'
+        << "save path:    " << opts.save_path << '\n'
+        << "backend:      " << opts.backend << '\n'
+        << "hash threads: " << opts.hash_threads << '\n'
+        << "aio threads:  " << opts.aio_threads << '\n'
+        << "checking RAM: " << opts.checking_mib << " MiB\n"
+        << "payload:      " << std::fixed << std::setprecision(2)
+        << (static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0)) << " GiB\n";
+
+    lt::torrent_handle const handle = session.add_torrent(atp);
+    print_result(opts, 1, wait_for_check(session, handle, opts.alert_timeout_seconds), bytes);
+
+    for (int run = 2; run <= opts.runs; ++run)
+    {
+        handle.force_recheck();
+        print_result(opts, run, wait_for_check(session, handle, opts.alert_timeout_seconds), bytes);
+    }
+
+    return 0;
+}
+catch (std::exception const& e)
+{
+    std::cerr << "checking_benchmark: " << e.what() << '\n';
+    return 1;
 }
