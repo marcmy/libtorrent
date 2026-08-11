@@ -160,7 +160,7 @@ namespace
     std::int64_t payload_bytes(lt::torrent_info const& ti)
     {
         std::int64_t total = 0;
-        auto const& files = ti.files();
+        auto const& files = ti.layout();
         for (lt::file_index_t const index : files.file_range())
         {
             if (!files.pad_file_at(index))
