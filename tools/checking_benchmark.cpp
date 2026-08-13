@@ -11,8 +11,8 @@ are met:
     * Redistributions of source code must retain the above copyright
       notice, this list of conditions and the following disclaimer.
     * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in
-      the documentation and/or other materials provided with the distribution.
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
     * Neither the name of the author nor the names of its
       contributors may be used to endorse or promote products derived
       from this software without specific prior written permission.
@@ -204,6 +204,20 @@ namespace
         }
     }
 
+    void verify_complete(lt::torrent_handle const& handle, int const run)
+    {
+        lt::torrent_status const status = handle.status();
+        std::cout << "VERIFY,run=" << run
+            << ",progress_ppm=" << status.progress_ppm
+            << ",is_seeding=" << (status.is_seeding ? "yes" : "no")
+            << ",num_pieces=" << status.num_pieces << '\n';
+
+        if (status.progress_ppm != 1000000 || !status.is_seeding)
+            throw std::runtime_error("recheck reported incomplete payload on run "
+                + std::to_string(run) + " (progress_ppm="
+                + std::to_string(status.progress_ppm) + ")");
+    }
+
     void print_result(options const& opts, int const run, double const seconds
         , std::int64_t const bytes)
     {
@@ -275,12 +289,16 @@ int main(int const argc, char const* const argv[]) try
         << (static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0)) << " GiB\n";
 
     lt::torrent_handle const handle = session.add_torrent(atp);
-    print_result(opts, 1, wait_for_check(session, handle, opts.alert_timeout_seconds), bytes);
+    double const first_seconds = wait_for_check(session, handle, opts.alert_timeout_seconds);
+    verify_complete(handle, 1);
+    print_result(opts, 1, first_seconds, bytes);
 
     for (int run = 2; run <= opts.runs; ++run)
     {
         handle.force_recheck();
-        print_result(opts, run, wait_for_check(session, handle, opts.alert_timeout_seconds), bytes);
+        double const seconds = wait_for_check(session, handle, opts.alert_timeout_seconds);
+        verify_complete(handle, run);
+        print_result(opts, run, seconds, bytes);
     }
 
     return 0;
