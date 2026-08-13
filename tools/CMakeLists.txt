@@ -13,6 +13,9 @@ target_link_libraries(checking_benchmark PRIVATE torrent-rasterbar)
 if (WIN32)
 	add_executable(checking_io_benchmark checking_io_benchmark.cpp)
 	target_link_libraries(checking_io_benchmark PRIVATE torrent-rasterbar)
+
+	add_executable(wof_checking_probe wof_checking_probe.cpp)
+	target_link_libraries(wof_checking_probe PRIVATE torrent-rasterbar Wofutil)
 endif()
 
 add_executable(gen_torture_torrent gen_torture_torrent.cpp)
