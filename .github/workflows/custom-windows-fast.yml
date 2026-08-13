@@ -161,7 +161,7 @@ jobs:
           cmake --build build --target checking_benchmark checking_io_benchmark --parallel
           cmake --install build
 
-      - name: Stress real WOF/LZX force recheck
+      - name: Stress real WOF/LZX multi-file force recheck
         if: github.event_name == 'pull_request' && github.head_ref == 'diag/wof-production-recheck'
         run: |
           $fixture = Join-Path $env:SystemDrive "wof-production-recheck-$env:GITHUB_RUN_ID"
@@ -180,9 +180,6 @@ jobs:
               throw "system volume does not have enough free space for the >4 GiB WOF fixture"
             }
 
-            # GitHub's workspace/temp volume and an attached NTFS VHDX both reject
-            # WOF /EXE compression. Probe the actual Windows system volume first so
-            # we fail quickly if this runner image disables WOF there as well.
             New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
             $probe = Join-Path $probeDir "probe.bin"
             [System.IO.File]::WriteAllBytes($probe, [byte[]]::new(1048576))
@@ -194,14 +191,46 @@ jobs:
             Remove-Item $probeDir -Recurse -Force
 
             python .github/scripts/create-wof-test-fixture.py --output $fixture
-            if ($LASTEXITCODE -ne 0) { throw "failed to create WOF test fixture" }
+            if ($LASTEXITCODE -ne 0) { throw "failed to create base WOF test fixture" }
 
-            $payload = Join-Path $fixture "payload.bin"
+            $dataRoot = Join-Path $fixture "payload"
+            $largeWof = Join-Path $dataRoot "bulk\large-wof.bin"
+            $mediumWof = Join-Path $dataRoot "bulk\medium-wof.bin"
+            $prefixPlain = Join-Path $dataRoot "edge\prefix.bin"
+            $betweenPlain = Join-Path $dataRoot "edge\between.bin"
+            $tailPlain = Join-Path $dataRoot "plain\tail.bin"
             $torrent = Join-Path $fixture "payload.torrent"
 
-            compact.exe /C /F /EXE:LZX $payload
-            if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX on system volume" }
-            compact.exe /Q $payload
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $largeWof) | Out-Null
+            Move-Item (Join-Path $fixture "payload.bin") $largeWof
+
+            $sources = @(
+              @{ path = $prefixPlain; size = 32891; dir = (Join-Path $fixture "src-prefix") },
+              @{ path = $betweenPlain; size = 16391; dir = (Join-Path $fixture "src-between") },
+              @{ path = $mediumWof; size = 50333993; dir = (Join-Path $fixture "src-medium") },
+              @{ path = $tailPlain; size = 25220145; dir = (Join-Path $fixture "src-tail") }
+            )
+            foreach ($source in $sources)
+            {
+              python .github/scripts/create-wof-test-fixture.py --output $source.dir --size $source.size
+              if ($LASTEXITCODE -ne 0) { throw "failed to create fixture member $($source.path)" }
+              New-Item -ItemType Directory -Force -Path (Split-Path -Parent $source.path) | Out-Null
+              Move-Item (Join-Path $source.dir "payload.bin") $source.path
+              Remove-Item $source.dir -Recurse -Force
+            }
+
+            python .github/scripts/create-wof-multifile-torrent.py `
+              --data-root $dataRoot `
+              --torrent $torrent
+            if ($LASTEXITCODE -ne 0) { throw "failed to create mixed multi-file torrent" }
+
+            $wofFiles = @($largeWof, $mediumWof)
+            foreach ($file in $wofFiles)
+            {
+              compact.exe /C /F /EXE:LZX $file
+              if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX to $file" }
+              compact.exe /Q $file
+            }
 
             $typeDefinition = @(
               'using System;',
@@ -219,26 +248,49 @@ jobs:
             ) -join "`r`n"
             Add-Type -TypeDefinition $typeDefinition
 
-            $external = $false
-            [uint32]$provider = 0
-            $hr = [WofProbe]::WofIsExternalFile(
-              $payload, [ref]$external, [ref]$provider, [IntPtr]::Zero, [IntPtr]::Zero)
-            "WofIsExternalFile: hr=0x{0:X8} external={1} provider={2}" -f ([uint32]$hr), $external, $provider
-            if ($hr -lt 0 -or -not $external -or $provider -ne 2)
+            foreach ($file in $wofFiles)
             {
-              throw "fixture is not backed by WOF_PROVIDER_FILE"
+              $external = $false
+              [uint32]$provider = 0
+              $hr = [WofProbe]::WofIsExternalFile(
+                $file, [ref]$external, [ref]$provider, [IntPtr]::Zero, [IntPtr]::Zero)
+              "WOF expected: file={0} hr=0x{1:X8} external={2} provider={3}" -f $file, ([uint32]$hr), $external, $provider
+              if ($hr -lt 0 -or -not $external -or $provider -ne 2)
+              {
+                throw "fixture file is not backed by WOF_PROVIDER_FILE: $file"
+              }
             }
 
-            & .\build\tools\checking_benchmark.exe `
-              --torrent $torrent `
-              --save-path $fixture `
-              --backend default `
-              --hash-threads 4 `
-              --aio-threads 10 `
-              --checking-mib 128 `
-              --runs 8 `
-              --alert-timeout 120
-            if ($LASTEXITCODE -ne 0) { throw "WOF/LZX recheck stress failed" }
+            foreach ($file in @($prefixPlain, $betweenPlain, $tailPlain))
+            {
+              $external = $false
+              [uint32]$provider = 0
+              $hr = [WofProbe]::WofIsExternalFile(
+                $file, [ref]$external, [ref]$provider, [IntPtr]::Zero, [IntPtr]::Zero)
+              "WOF plain: file={0} hr=0x{1:X8} external={2} provider={3}" -f $file, ([uint32]$hr), $external, $provider
+              if ($hr -lt 0 -or $external)
+              {
+                throw "plain fixture file unexpectedly reports as external WOF: $file"
+              }
+            }
+
+            foreach ($backend in @('default', 'pread'))
+            {
+              "=== force-recheck backend: $backend ==="
+              & .\build\tools\checking_benchmark.exe `
+                --torrent $torrent `
+                --save-path $fixture `
+                --backend $backend `
+                --hash-threads 4 `
+                --aio-threads 10 `
+                --checking-mib 128 `
+                --runs 6 `
+                --alert-timeout 120
+              if ($LASTEXITCODE -ne 0)
+              {
+                throw "WOF/LZX multi-file recheck failed for backend $backend"
+              }
+            }
           }
           finally
           {
