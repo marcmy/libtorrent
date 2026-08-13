@@ -247,10 +247,22 @@ namespace
             << ",skipped_file=" << boundary.skipped_file
             << ",wanted_file=" << boundary.wanted_file << '\n';
 
-        // Invalidate both sides of one cross-file piece. The WOF file selected
-        // here is the ~50 MiB member, avoiding multi-GiB hydration just to set
-        // up the test while still exercising WOF on the restored recheck.
-        zero_piece_segment(files, boundary.skipped_file, boundary, opts.save_path);
+        // A priority-0 file is only routed to the partfile when it does not
+        // already exist when storage initializes. Move the small WOF member
+        // aside, damage the wanted side of the crossing piece, then inject the
+        // complete piece. The skipped-file slice must then enter the partfile.
+        fs::path const skipped_path =
+            payload_path(files, boundary.skipped_file, opts.save_path);
+        fs::path const backup_path =
+            fs::path(skipped_path.string() + ".phase4-backup");
+
+        fs::remove(backup_path, ec);
+        ec.clear();
+        fs::rename(skipped_path, backup_path, ec);
+        if (ec)
+            throw std::runtime_error(
+                "phase4 failed to move skipped WOF payload aside: " + ec.message());
+
         zero_piece_segment(files, boundary.wanted_file, boundary, opts.save_path);
 
         {
@@ -281,6 +293,18 @@ namespace
             std::cout << "PHASE4_PARTFILE,bytes=" << stored << '\n';
             if (stored == 0)
                 throw std::runtime_error("phase4 injected piece did not create partfile storage");
+
+            // Restore the original WOF file before changing its priority.
+            // set_file_priority() will then export the saved partfile slice
+            // over the corresponding region of this payload file.
+            ec.clear();
+            fs::rename(backup_path, skipped_path, ec);
+            if (ec)
+                throw std::runtime_error(
+                    "phase4 failed to restore skipped WOF payload: " + ec.message());
+
+            std::cout << "PHASE4_BACKUP_RESTORED,file="
+                << boundary.skipped_file << '\n';
 
             handle.file_priority(lt::file_index_t{boundary.skipped_file}, lt::default_priority);
             wait_for_priorities(handle, {boundary.skipped_file}, lt::default_priority
