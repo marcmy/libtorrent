@@ -33,7 +33,6 @@ see LICENSE file.
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <wofapi.h>
 #endif
 
 #include "libtorrent/aux_/disable_warnings_push.hpp"
@@ -64,6 +63,10 @@ struct wofutil
 	static constexpr char const* library_name = "Wofutil.dll";
 };
 
+// WOF_PROVIDER_FILE from the Windows SDK. Keep this local so detecting WOF
+// remains runtime-only and does not require wofapi.h on older SDK targets.
+constexpr ULONG wof_provider_file = 0x00000002;
+
 bool is_wof_file_provider(std::string const& path)
 {
 	using wof_is_external_file_t = HRESULT(WINAPI*)(LPCWSTR, PBOOL, PULONG, PVOID, PULONG);
@@ -77,7 +80,7 @@ bool is_wof_file_provider(std::string const& path)
 	HRESULT const result = wof_is_external_file(native_path.c_str()
 		, &external, &provider, nullptr, nullptr);
 
-	return SUCCEEDED(result) && external != FALSE && provider == WOF_PROVIDER_FILE;
+	return SUCCEEDED(result) && external != FALSE && provider == wof_provider_file;
 }
 #endif
 
