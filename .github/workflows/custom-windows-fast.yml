@@ -178,3 +178,21 @@ jobs:
             build/tools/checking_io_benchmark.exe
             build/tools/checking_io_benchmark.pdb
             tools/run_checking_matrix.ps1
+
+  dispatch-qbittorrent:
+    name: Trigger qBittorrent build
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch qBittorrent sync
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-upstream-synced
+          client-payload: >-
+            {"libtorrent_sha":"${{ github.sha }}","libtorrent_changed":"true"}
