@@ -7,7 +7,7 @@ target_link_libraries(dht_sample PRIVATE torrent-rasterbar)
 add_executable(session_log_alerts session_log_alerts.cpp)
 target_link_libraries(session_log_alerts PRIVATE torrent-rasterbar)
 
-add_executable(checking_benchmark checking_benchmark.cpp)
+add_executable(checking_benchmark checking_benchmark_phase3.cpp)
 target_link_libraries(checking_benchmark PRIVATE torrent-rasterbar)
 
 if (WIN32)
