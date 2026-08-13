@@ -161,6 +161,56 @@ jobs:
           cmake --build build --target checking_benchmark checking_io_benchmark --parallel
           cmake --install build
 
+      - name: Stress real WOF/LZX force recheck
+        if: github.event_name == 'pull_request' && github.head_ref == 'diag/wof-production-recheck'
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "wof-production-recheck"
+          python .github/scripts/create-wof-test-fixture.py --output $fixture
+          if ($LASTEXITCODE -ne 0) { throw "failed to create WOF test fixture" }
+
+          $payload = Join-Path $fixture "payload.bin"
+          $torrent = Join-Path $fixture "payload.torrent"
+
+          compact.exe /C /F /EXE:LZX $payload
+          if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX" }
+          compact.exe /Q $payload
+
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class WofProbe
+          {
+              [DllImport("Wofutil.dll", CharSet = CharSet.Unicode)]
+              public static extern int WofIsExternalFile(
+                  string path,
+                  [MarshalAs(UnmanagedType.Bool)] out bool external,
+                  out uint provider,
+                  IntPtr externalFileInfo,
+                  IntPtr bufferLength);
+          }
+          "@
+
+          $external = $false
+          [uint32]$provider = 0
+          $hr = [WofProbe]::WofIsExternalFile(
+            $payload, [ref]$external, [ref]$provider, [IntPtr]::Zero, [IntPtr]::Zero)
+          "WofIsExternalFile: hr=0x{0:X8} external={1} provider={2}" -f ([uint32]$hr), $external, $provider
+          if ($hr -lt 0 -or -not $external -or $provider -ne 2)
+          {
+            throw "fixture is not backed by WOF_PROVIDER_FILE"
+          }
+
+          & .\build\tools\checking_benchmark.exe `
+            --torrent $torrent `
+            --save-path $fixture `
+            --backend default `
+            --hash-threads 4 `
+            --aio-threads 10 `
+            --checking-mib 128 `
+            --runs 8 `
+            --alert-timeout 120
+          if ($LASTEXITCODE -ne 0) { throw "WOF/LZX recheck stress failed" }
+
       - name: Show sccache stats
         if: always()
         continue-on-error: true
