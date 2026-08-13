@@ -42,23 +42,47 @@ std::string backend;
 std::vector<segment_trace> segments;
 };
 
+inline std::string default_log_path()
+{
+#ifdef _WIN32
+    char const* const temp = std::getenv("TEMP");
+    if (temp != nullptr && *temp != '\0')
+    {
+        std::string path = temp;
+
+        if (path.back() != '\\' && path.back() != '/')
+            path.push_back('\\');
+
+        path += "libtorrent-recheck-diagnostics.log";
+        return path;
+    }
+#endif
+
+    return std::string{"libtorrent-recheck-diagnostics.log"};
+}
+
 inline std::string const& log_path()
 {
-static std::string const path = [] {
-char const* const value =
-std::getenv("LIBTORRENT_RECHECK_DIAGNOSTICS");
+    static std::string const path = [] {
+        char const* const value =
+            std::getenv("LIBTORRENT_RECHECK_DIAGNOSTICS");
 
-if (value == nullptr || *value == '\0'
-|| std::string(value) == "0")
-return std::string{};
+        // This diagnostic branch is intentionally armed by default.
+        //
+        // unset / empty / "1" = default log path
+        // "0"                 = disable diagnostics
+        // anything else       = explicit log path
+        if (value == nullptr || *value == '\0'
+            || std::string(value) == "1")
+            return default_log_path();
 
-if (std::string(value) == "1")
-return std::string{"libtorrent-recheck-diagnostics.log"};
+        if (std::string(value) == "0")
+            return std::string{};
 
-return std::string{value};
-}();
+        return std::string{value};
+    }();
 
-return path;
+    return path;
 }
 
 inline bool enabled()
