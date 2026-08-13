@@ -8,6 +8,8 @@ on:
       paths-ignore:
          - bindings/python/**
    pull_request:
+      branches-ignore:
+         - custom/qbittorrent-2.1
       paths-ignore:
          - bindings/python/**
 
