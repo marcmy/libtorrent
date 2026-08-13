@@ -2655,7 +2655,7 @@ std::stringstream actual_hash;
 actual_hash << piece_hash;
 
 recheck_diag::finish_piece(
-static_cast<std::uint32_t>(m_storage)
+static_cast<std::uint32_t>(static_cast<storage_index_t>(m_storage))
 , static_cast<int>(piece)
 , true
 , name()
@@ -2762,7 +2762,7 @@ std::stringstream actual_hash;
 actual_hash << piece_hash;
 
 recheck_diag::finish_piece(
-static_cast<std::uint32_t>(m_storage)
+static_cast<std::uint32_t>(static_cast<storage_index_t>(m_storage))
 , static_cast<int>(piece)
 , v1_failed || v2_failed
 , name()
