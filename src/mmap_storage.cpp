@@ -27,6 +27,15 @@ see LICENSE file.
 #include <cstdio>
 #include <optional>
 
+#ifdef TORRENT_WINDOWS
+#include "libtorrent/aux_/win_util.hpp"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <wofapi.h>
+#endif
+
 #include "libtorrent/aux_/disable_warnings_push.hpp"
 
 #include "libtorrent/aux_/disable_warnings_pop.hpp"
@@ -48,6 +57,29 @@ see LICENSE file.
 namespace libtorrent::aux {
 
 namespace {
+
+#ifdef TORRENT_WINDOWS
+struct wofutil
+{
+	static constexpr char const* library_name = "Wofutil.dll";
+};
+
+bool is_wof_file_provider(std::string const& path)
+{
+	using wof_is_external_file_t = HRESULT(WINAPI*)(LPCWSTR, PBOOL, PULONG, PVOID, PULONG);
+	auto const wof_is_external_file =
+		get_library_procedure<wofutil, wof_is_external_file_t>("WofIsExternalFile");
+	if (wof_is_external_file == nullptr) return false;
+
+	auto const native_path = convert_to_native_path_string(path);
+	BOOL external = FALSE;
+	ULONG provider = 0;
+	HRESULT const result = wof_is_external_file(native_path.c_str()
+		, &external, &provider, nullptr, nullptr);
+
+	return SUCCEEDED(result) && external != FALSE && provider == WOF_PROVIDER_FILE;
+}
+#endif
 
 error_code translate_error(std::error_code const& err, bool const write)
 {
@@ -1011,6 +1043,14 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 		if (sett.get_bool(settings_pack::disk_disable_copy_on_write))
 			mode |= aux::open_mode::no_cow;
+
+#ifdef TORRENT_WINDOWS
+		// WOF file-provider compression (CompactOS/CompactGUI) is transparently
+		// readable through normal file I/O. Avoid mapping these files and use
+		// the mmap backend's existing pread/pwrite fallback instead.
+		if (is_wof_file_provider(names().file_path(file, m_save_path)))
+			mode |= aux::open_mode::no_mmap;
+#endif
 
 		if (files().file_size(file) / default_block_size
 			<= sett.get_int(settings_pack::mmap_file_size_cutoff))
