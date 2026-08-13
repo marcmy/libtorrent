@@ -164,23 +164,35 @@ jobs:
       - name: Stress real WOF/LZX force recheck
         if: github.event_name == 'pull_request' && github.head_ref == 'diag/wof-production-recheck'
         run: |
-          $vhd = Join-Path $env:RUNNER_TEMP "wof-production-recheck.vhdx"
-          $createVhd = @(
-            "create vdisk file=`"$vhd`" maximum=8192 type=expandable",
-            "select vdisk file=`"$vhd`"",
-            "attach vdisk",
-            "create partition primary",
-            "format fs=ntfs quick label=WOFCI",
-            "assign letter=W",
-            "exit"
-          ) -join "`r`n"
-
-          $createVhd | diskpart.exe | Out-Host
-          if (-not (Test-Path "W:\")) { throw "failed to mount temporary NTFS VHDX" }
+          $fixture = Join-Path $env:SystemDrive "wof-production-recheck-$env:GITHUB_RUN_ID"
+          $probeDir = Join-Path $env:SystemDrive "wof-capability-probe-$env:GITHUB_RUN_ID"
 
           try
           {
-            $fixture = "W:\wof-production-recheck"
+            $volume = Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':')
+            $volume | Format-List DriveLetter, FileSystem, Size, SizeRemaining
+            if ($volume.FileSystem -ne 'NTFS')
+            {
+              throw "system volume is not NTFS"
+            }
+            if ($volume.SizeRemaining -lt 6GB)
+            {
+              throw "system volume does not have enough free space for the >4 GiB WOF fixture"
+            }
+
+            # GitHub's workspace/temp volume and an attached NTFS VHDX both reject
+            # WOF /EXE compression. Probe the actual Windows system volume first so
+            # we fail quickly if this runner image disables WOF there as well.
+            New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+            $probe = Join-Path $probeDir "probe.bin"
+            [System.IO.File]::WriteAllBytes($probe, [byte[]]::new(1048576))
+            compact.exe /C /F /EXE:LZX $probe
+            if ($LASTEXITCODE -ne 0)
+            {
+              throw "system volume does not support WOF/LZX compression"
+            }
+            Remove-Item $probeDir -Recurse -Force
+
             python .github/scripts/create-wof-test-fixture.py --output $fixture
             if ($LASTEXITCODE -ne 0) { throw "failed to create WOF test fixture" }
 
@@ -188,7 +200,7 @@ jobs:
             $torrent = Join-Path $fixture "payload.torrent"
 
             compact.exe /C /F /EXE:LZX $payload
-            if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX" }
+            if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX on system volume" }
             compact.exe /Q $payload
 
             $typeDefinition = @(
@@ -230,13 +242,8 @@ jobs:
           }
           finally
           {
-            $detachVhd = @(
-              "select vdisk file=`"$vhd`"",
-              "detach vdisk",
-              "exit"
-            ) -join "`r`n"
-            $detachVhd | diskpart.exe | Out-Host
-            Remove-Item $vhd -Force -ErrorAction SilentlyContinue
+            Remove-Item $probeDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $fixture -Recurse -Force -ErrorAction SilentlyContinue
           }
 
       - name: Show sccache stats
