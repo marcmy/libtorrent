@@ -165,15 +165,15 @@ jobs:
         if: github.event_name == 'pull_request' && github.head_ref == 'diag/wof-production-recheck'
         run: |
           $vhd = Join-Path $env:RUNNER_TEMP "wof-production-recheck.vhdx"
-          $createVhd = @"
-          create vdisk file="$vhd" maximum=8192 type=expandable
-          select vdisk file="$vhd"
-          attach vdisk
-          create partition primary
-          format fs=ntfs quick label=WOFCI
-          assign letter=W
-          exit
-          "@
+          $createVhd = @(
+            "create vdisk file=`"$vhd`" maximum=8192 type=expandable",
+            "select vdisk file=`"$vhd`"",
+            "attach vdisk",
+            "create partition primary",
+            "format fs=ntfs quick label=WOFCI",
+            "assign letter=W",
+            "exit"
+          ) -join "`r`n"
 
           $createVhd | diskpart.exe | Out-Host
           if (-not (Test-Path "W:\")) { throw "failed to mount temporary NTFS VHDX" }
@@ -191,20 +191,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "compact.exe failed to apply LZX" }
             compact.exe /Q $payload
 
-            Add-Type @"
-            using System;
-            using System.Runtime.InteropServices;
-            public static class WofProbe
-            {
-                [DllImport("Wofutil.dll", CharSet = CharSet.Unicode)]
-                public static extern int WofIsExternalFile(
-                    string path,
-                    [MarshalAs(UnmanagedType.Bool)] out bool external,
-                    out uint provider,
-                    IntPtr externalFileInfo,
-                    IntPtr bufferLength);
-            }
-            "@
+            $typeDefinition = @(
+              'using System;',
+              'using System.Runtime.InteropServices;',
+              'public static class WofProbe',
+              '{',
+              '    [DllImport("Wofutil.dll", CharSet = CharSet.Unicode)]',
+              '    public static extern int WofIsExternalFile(',
+              '        string path,',
+              '        [MarshalAs(UnmanagedType.Bool)] out bool external,',
+              '        out uint provider,',
+              '        IntPtr externalFileInfo,',
+              '        IntPtr bufferLength);',
+              '}'
+            ) -join "`r`n"
+            Add-Type -TypeDefinition $typeDefinition
 
             $external = $false
             [uint32]$provider = 0
@@ -229,11 +230,11 @@ jobs:
           }
           finally
           {
-            $detachVhd = @"
-            select vdisk file="$vhd"
-            detach vdisk
-            exit
-            "@
+            $detachVhd = @(
+              "select vdisk file=`"$vhd`"",
+              "detach vdisk",
+              "exit"
+            ) -join "`r`n"
             $detachVhd | diskpart.exe | Out-Host
             Remove-Item $vhd -Force -ErrorAction SilentlyContinue
           }
