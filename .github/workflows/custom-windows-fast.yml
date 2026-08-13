@@ -37,8 +37,8 @@ jobs:
         shell: pwsh
 
     env:
-      boost_path: "${{ runner.temp }}/boost"
-      vcpkg_binary_cache: "${{ runner.temp }}/vcpkg-binary-cache"
+      boost_path: "${{ github.workspace }}/.ci-cache/boost"
+      vcpkg_binary_cache: "${{ github.workspace }}/.ci-cache/vcpkg-binary-cache"
       vcpkg_path: "c:/vcpkg"
       target_arch: "x64"
       vcpkg_triplet: "x64-windows-static-md-release"
