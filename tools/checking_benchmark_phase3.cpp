@@ -30,6 +30,11 @@ POSSIBILITY OF SUCH DAMAGE.
 
 */
 
+#ifdef main
+#define CHECKING_BENCHMARK_PHASE3_EMBEDDED
+#undef main
+#endif
+
 #define main checking_benchmark_steady_main
 #include "checking_benchmark.cpp"
 #undef main
@@ -189,7 +194,7 @@ namespace
     }
 }
 
-int main(int const argc, char const* const argv[])
+int checking_benchmark_phase3_main(int const argc, char const* const argv[])
 {
     int const steady_result = checking_benchmark_steady_main(argc, argv);
     if (steady_result != 0) return steady_result;
@@ -212,3 +217,10 @@ int main(int const argc, char const* const argv[])
         return 1;
     }
 }
+
+#ifndef CHECKING_BENCHMARK_PHASE3_EMBEDDED
+int main(int const argc, char const* const argv[])
+{
+    return checking_benchmark_phase3_main(argc, argv);
+}
+#endif
