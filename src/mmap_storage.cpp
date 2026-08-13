@@ -15,6 +15,7 @@ see LICENSE file.
 #include "libtorrent/config.hpp"
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/aux_/storage_utils.hpp"
+#include "libtorrent/aux_/recheck_diagnostics.hpp"
 #include "libtorrent/hasher.hpp"
 
 #include "try_signal.hpp"
@@ -810,44 +811,119 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 		std::vector<char> scratch;
 
 		return readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, mode, flags, &ph, &sett, &scratch](file_index_t const file_index
+			, [this, mode, flags, &ph, &sett, &scratch, piece, offset](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> const buf, storage_error& ec)
 		{
 			if (files().pad_file_at(file_index))
-				return aux::hash_zeroes(ph, buf.size());
+{
+int const ret = aux::hash_zeroes(ph, buf.size());
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
-			{
-				error_code e;
-				peer_request map = files().map_file(file_index, file_offset, 0);
-				int const ret = m_part_file->hash(ph, buf.size()
-					, map.piece, map.start, e);
+recheck_diag::record_segment(
+static_cast<std::uint32_t>(storage_index())
+, static_cast<int>(piece)
+, "mmap"
+, offset / default_block_size
+, offset
+, static_cast<int>(file_index)
+, file_offset
+, buf.size()
+, ret
+, 0
+, 0
+, names().file_path(file_index, m_save_path)
+, "pad");
 
-				if (e)
-				{
-					ec.ec = e;
-					ec.operation = operation_t::partfile_read;
-					return -1;
-				}
-				return ret;
-			}
+return ret;
+}
 
-			auto handle = open_file(sett, file_index, mode, ec);
-			if (ec) return -1;
+std::string const diag_path = recheck_diag::enabled()
+? names().file_path(file_index, m_save_path)
+: std::string{};
 
-			if (!handle->has_memory_map())
-			{
-				scratch.resize(std::size_t(buf.size()));
-				int const ret = aux::pread_all(handle->fd(), scratch, file_offset, ec.ec);
-				if (ec) return -1;
-				ph.update(scratch);
-				return ret;
-			}
+if (file_index < m_file_priority.end_index()
+&& m_file_priority[file_index] == dont_download
+&& use_partfile(file_index))
+{
+error_code e;
+peer_request map = files().map_file(file_index, file_offset, 0);
+int const ret = m_part_file->hash(ph, buf.size()
+, map.piece, map.start, e);
 
-			int ret = 0;
+recheck_diag::record_segment(
+static_cast<std::uint32_t>(storage_index())
+, static_cast<int>(piece)
+, "mmap"
+, offset / default_block_size
+, offset
+, static_cast<int>(file_index)
+, file_offset
+, buf.size()
+, ret
+, e.value()
+, static_cast<int>(operation_t::partfile_read)
+, diag_path
+, "partfile");
+
+if (e)
+{
+ec.ec = e;
+ec.operation = operation_t::partfile_read;
+return -1;
+}
+return ret;
+}
+
+auto handle = open_file(sett, file_index, mode, ec);
+if (ec)
+{
+recheck_diag::record_segment(
+static_cast<std::uint32_t>(storage_index())
+, static_cast<int>(piece)
+, "mmap"
+, offset / default_block_size
+, offset
+, static_cast<int>(file_index)
+, file_offset
+, buf.size()
+, -1
+, ec.ec.value()
+, static_cast<int>(ec.operation)
+, diag_path
+, "open-error");
+
+return -1;
+}
+
+if (!handle->has_memory_map())
+{
+scratch.resize(std::size_t(buf.size()));
+
+int const ret = aux::pread_all(
+handle->fd(), scratch, file_offset, ec.ec);
+
+recheck_diag::record_segment(
+static_cast<std::uint32_t>(storage_index())
+, static_cast<int>(piece)
+, "mmap"
+, offset / default_block_size
+, offset
+, static_cast<int>(file_index)
+, file_offset
+, buf.size()
+, ret
+, ec.ec.value()
+, static_cast<int>(ec.operation)
+, diag_path
+, "pread-fallback");
+
+if (ec) return -1;
+
+ph.update(scratch);
+return ret;
+}
+
+int ret = 0;
 			span<byte const> file_range = handle->range();
 			if (file_range.size() > file_offset)
 			{
@@ -882,11 +958,26 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 				}
 			}
 
-			return ret;
-		});
-	}
+			recheck_diag::record_segment(
+static_cast<std::uint32_t>(storage_index())
+, static_cast<int>(piece)
+, "mmap"
+, offset / default_block_size
+, offset
+, static_cast<int>(file_index)
+, file_offset
+, buf.size()
+, ret
+, ec.ec.value()
+, static_cast<int>(ec.operation)
+, diag_path
+, "mmap");
 
-	int mmap_storage::hash2(settings_interface const& sett
+return ret;
+});
+}
+
+int mmap_storage::hash2(settings_interface const& sett
 		, hasher256& ph, std::ptrdiff_t const len
 		, piece_index_t const piece, int const offset
 		, aux::open_mode_t const mode

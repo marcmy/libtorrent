@@ -105,6 +105,7 @@ see LICENSE file.
 #include "libtorrent/aux_/ssl.hpp"
 #include "libtorrent/aux_/apply_pad_files.hpp"
 #include "libtorrent/aux_/tracker_list.hpp"
+#include "libtorrent/aux_/recheck_diagnostics.hpp"
 
 #ifndef TORRENT_DISABLE_LOGGING
 #include "libtorrent/aux_/session_impl.hpp" // for tracker_logger
@@ -2641,8 +2642,35 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		++m_num_checked_pieces;
 
 		if (error)
-		{
-			if (error.ec == boost::system::errc::no_such_file_or_directory
+{
+if (recheck_diag::enabled())
+{
+std::stringstream expected_hash;
+if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
+expected_hash << m_torrent_file->hash_for_piece(piece);
+else
+expected_hash << "n/a";
+
+std::stringstream actual_hash;
+actual_hash << piece_hash;
+
+recheck_diag::finish_piece(
+static_cast<std::uint32_t>(m_storage)
+, static_cast<int>(piece)
+, true
+, name()
+, expected_hash.str()
+, actual_hash.str()
+, false
+, false
+, error.ec.value()
+, error.ec.message()
+, static_cast<int>(error.operation)
+, static_cast<int>(
+static_cast<std::int32_t>(error.file())));
+}
+
+if (error.ec == boost::system::errc::no_such_file_or_directory
 				|| error.ec == boost::asio::error::eof
 				|| error.ec == lt::errors::file_too_short
 #ifdef TORRENT_WINDOWS
@@ -2718,7 +2746,37 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		debug_log("on_piece_hashed, piece: %d piece_hash: %s"
 			, static_cast<int>(piece), hash.str().c_str());
 #endif
-		if ((hash_passed[0] && !hash_passed[1]) || (!hash_passed[0] && hash_passed[1]))
+
+if (recheck_diag::enabled() && !error)
+{
+bool const v1_failed = bool(hash_passed[0] == false);
+bool const v2_failed = bool(hash_passed[1] == false);
+
+std::stringstream expected_hash;
+if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
+expected_hash << m_torrent_file->hash_for_piece(piece);
+else
+expected_hash << "n/a";
+
+std::stringstream actual_hash;
+actual_hash << piece_hash;
+
+recheck_diag::finish_piece(
+static_cast<std::uint32_t>(m_storage)
+, static_cast<int>(piece)
+, v1_failed || v2_failed
+, name()
+, expected_hash.str()
+, actual_hash.str()
+, v1_failed
+, v2_failed
+, 0
+, ""
+, 0
+, -1);
+}
+
+if ((hash_passed[0] && !hash_passed[1]) || (!hash_passed[0] && hash_passed[1]))
 		{
 			handle_inconsistent_hashes(piece);
 			return;
