@@ -1,0 +1,71 @@
+name: Apply WOF portability fix
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/apply-wof-portability.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+
+      - name: Apply source fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/mmap_storage.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = '#include <windows.h>\n#include <wofapi.h>\n'
+          new = '#include <windows.h>\n'
+          if old not in text:
+              raise SystemExit("wofapi include block not found")
+          text = text.replace(old, new, 1)
+
+          old = '''struct wofutil\n{\n\tstatic constexpr char const* library_name = "Wofutil.dll";\n};\n\nbool is_wof_file_provider'''
+          new = '''struct wofutil\n{\n\tstatic constexpr char const* library_name = "Wofutil.dll";\n};\n\n// WOF_PROVIDER_FILE from the Windows SDK. Keep this local so detecting WOF\n// remains runtime-only and does not require wofapi.h on older SDK targets.\nconstexpr ULONG wof_provider_file = 0x00000002;\n\nbool is_wof_file_provider'''
+          if old not in text:
+              raise SystemExit("wofutil helper block not found")
+          text = text.replace(old, new, 1)
+
+          old = 'provider == WOF_PROVIDER_FILE;'
+          new = 'provider == wof_provider_file;'
+          if old not in text:
+              raise SystemExit("provider comparison not found")
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Remove one-shot workflow
+        run: git rm .github/workflows/apply-wof-portability.yml
+
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          ! grep -q 'wofapi.h' src/mmap_storage.cpp
+          ! grep -q 'WOF_PROVIDER_FILE' src/mmap_storage.cpp
+          grep -q 'constexpr ULONG wof_provider_file = 0x00000002;' src/mmap_storage.cpp
+          git diff -- src/mmap_storage.cpp .github/workflows/apply-wof-portability.yml
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/mmap_storage.cpp .github/workflows/apply-wof-portability.yml
+          git commit -m "Fix Windows: keep WOF detection SDK-independent"
+          git push origin HEAD:custom/qbittorrent-2.1
