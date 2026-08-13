@@ -158,7 +158,7 @@ jobs:
       - name: Build and install
         run: |
           cmake --build build --target torrent-rasterbar --parallel
-          cmake --build build --target checking_benchmark checking_io_benchmark --parallel
+          cmake --build build --target checking_benchmark checking_io_benchmark wof_checking_probe --parallel
           cmake --install build
 
       - name: Show sccache stats
@@ -177,4 +177,6 @@ jobs:
             build/tools/checking_benchmark.pdb
             build/tools/checking_io_benchmark.exe
             build/tools/checking_io_benchmark.pdb
+            build/tools/wof_checking_probe.exe
+            build/tools/wof_checking_probe.pdb
             tools/run_checking_matrix.ps1
