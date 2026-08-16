@@ -1,0 +1,65 @@
+name: Harden partfile recovery patch
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/harden-partfile-recovery.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+      - name: Apply hardening
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected one match, found {n}")
+              return text.replace(old, new, 1)
+
+          p = Path('src/part_file.cpp')
+          s = p.read_text()
+          s = once(s,
+              "\t\tif (file_mode & aux::open_mode::write)\n\t\t\tfile_mode |= aux::open_mode::sparse;",
+              "#ifdef TORRENT_WINDOWS\n\t\tif (file_mode & aux::open_mode::write)\n\t\t\tfile_mode |= aux::open_mode::sparse;\n#endif",
+              'limit sparse mode to Windows')
+          s = once(s,
+              "\t\t\t}\n\t\t\treturn {};\n\t\t}\n\t}\n\tcatch (storage_error const& e)",
+              "\t\t\t}\n\t\t\tec = e.ec;\n\t\t\treturn {};\n\t\t}\n\t}\n\tcatch (storage_error const& e)",
+              'propagate part-file open error')
+          p.write_text(s)
+
+          p = Path('src/mmap_storage.cpp')
+          s = p.read_text()
+          s = once(s,
+              "\t\t\t\t\tif (e == boost::system::errc::no_such_file_or_directory)\n\t\t\t\t\t{",
+              "\t\t\t\t\tif (e == boost::system::errc::no_such_file_or_directory\n\t\t\t\t\t\t|| e == boost::asio::error::eof\n\t\t\t\t\t\t|| e == lt::errors::file_too_short)\n\t\t\t\t\t{",
+              'treat truncated part-file data as recoverable')
+          p.write_text(s)
+          PY
+
+          git diff --check
+          git diff -- src/part_file.cpp src/mmap_storage.cpp
+
+      - name: Commit hardening
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/part_file.cpp src/mmap_storage.cpp
+          git diff --cached --check
+          git commit -m "Harden selective part-file recovery"
+          git push origin HEAD:custom/qbittorrent-2.1
