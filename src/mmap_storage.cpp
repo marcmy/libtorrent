@@ -544,8 +544,68 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 		, aux::vector<std::string, file_index_t> const& links
 		, storage_error& ec)
 	{
-		return aux::verify_resume_data(rd, links, names()
+		bool const ret = aux::verify_resume_data(rd, links, names()
 			, m_file_priority, m_stat_cache, m_save_path, ec);
+
+		if (!ret || rd.have_pieces.empty()) return ret;
+
+		// While checking, torrent::write_resume_data() deliberately saves only
+		// the prefix that has actually been checked. A cleared bit in that
+		// prefix therefore means "checked and missing", not "never checked".
+		// Rebuild the transient part-file recovery classification here so an
+		// interrupted check can resume without requiring another Force Recheck.
+		//
+		// A completed torrent may also have a full-size bitfield after the check
+		// finished but before recovery started. completed_time lets us recover
+		// that case without treating every ordinary incomplete torrent as a
+		// part-file recovery candidate.
+		bool const interrupted_check = rd.have_pieces.size() < files().num_pieces();
+		if (!interrupted_check && rd.completed_time == 0) return ret;
+
+		filenames const fs = names();
+		int const checked_pieces = std::min(rd.have_pieces.size(), files().num_pieces());
+		for (piece_index_t piece{0}; piece < piece_index_t(checked_pieces); ++piece)
+		{
+			if (rd.have_pieces[piece]) continue;
+
+			bool has_wanted = false;
+			bool has_partfile = false;
+			bool wanted_backing_complete = true;
+
+			for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
+			{
+				file_index_t const file = slice.file_index;
+				if (fs.pad_file_at(file)) continue;
+
+				bool const skipped = file < m_file_priority.end_index()
+					&& m_file_priority[file] == dont_download;
+				if (skipped)
+				{
+					if (use_partfile(file)) has_partfile = true;
+					continue;
+				}
+
+				has_wanted = true;
+				error_code stat_error;
+				auto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
+				if (stat_error || actual_size < slice.offset + slice.size)
+				{
+					wanted_backing_complete = false;
+					break;
+				}
+			}
+
+			// Only protect a mixed wanted/.parts piece when the wanted backing
+			// file is still physically complete. If a wanted file is genuinely
+			// missing or short, normal repair must be allowed to create it.
+			// If wanted bytes merely hash wrong, the protected backing-storage
+			// verification will fail, clear recovery, and the next attempt becomes
+			// an ordinary repair.
+			if (has_wanted && has_partfile && wanted_backing_complete)
+				set_partfile_repair(piece, true);
+		}
+
+		return ret;
 	}
 
 	std::pair<status_t, std::string> mmap_storage::move_storage(std::string save_path
