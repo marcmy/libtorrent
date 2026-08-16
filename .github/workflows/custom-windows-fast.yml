@@ -8,6 +8,7 @@ on:
       - "**/*.md"
       - "docs/**"
       - "bindings/python/**"
+      - ".github/**"
   pull_request:
     branches:
       - custom/qbittorrent-2.1
@@ -15,6 +16,7 @@ on:
       - "**/*.md"
       - "docs/**"
       - "bindings/python/**"
+      - ".github/**"
   workflow_dispatch:
 
 permissions:
