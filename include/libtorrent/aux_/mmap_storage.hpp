@@ -120,6 +120,12 @@ namespace libtorrent::aux {
 		bool v1() const { return m_v1; }
 		bool v2() const { return m_v2; }
 
+		// A v1 piece whose skipped-file bytes disappeared from the part file.
+		// mmap_disk_io keeps this state active until recovery writes drain and
+		// a full backing-storage hash has completed.
+		bool partfile_repair(piece_index_t piece) const;
+		void set_partfile_repair(piece_index_t piece, bool enabled);
+
 		// SHA-256 block hashes computed inline during write jobs (see
 		// m_precomputed_v2). Consumed by hash/hash2 jobs to avoid re-reading the
 		// block from disk just to hash it. A block whose hash hasn't been
@@ -149,8 +155,6 @@ namespace libtorrent::aux {
 		storage_index_t m_storage_index{0};
 
 		void need_partfile();
-		bool partfile_repair(piece_index_t piece) const;
-		void set_partfile_repair(piece_index_t piece, bool enabled);
 
 		renamed_files m_renamed_files;
 

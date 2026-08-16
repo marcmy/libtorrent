@@ -697,6 +697,16 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 			v2,
 			sha1_hash{}
 		);
+		// A part-file recovery hash must run after every queued recovery write
+		// has drained. Otherwise a wanted-file write could observe recovery
+		// already cleared, and the hash could incorrectly consume peer bytes
+		// still present in m_store_buffer instead of validating disk state.
+		if (j->storage->partfile_repair(piece))
+		{
+			add_fence_job(j);
+			return;
+		}
+
 		add_job(j);
 	}
 
@@ -872,6 +882,7 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 
 		bool const v1 = bool(j->flags & disk_interface::v1_hash);
 		bool const v2 = !a.block_hashes.empty();
+		bool const partfile_recovery = v1 && j->storage->partfile_repair(a.piece);
 
 		int const piece_size = v1 ? j->storage->files().piece_size(a.piece) : 0;
 		int const piece_size2 = v2 ? j->storage->files().piece_size2(a.piece) : 0;
@@ -922,7 +933,8 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 			// hash2() fallback
 			bool const need_v2_io = v2_block && !have_precomputed_v2;
 
-			if (!m_store_buffer.get({ j->storage->storage_index(), a.piece, offset }
+			bool const store_hit = !partfile_recovery
+				&& m_store_buffer.get({ j->storage->storage_index(), a.piece, offset }
 				, [&](char const* buf)
 				{
 					if (v1)
@@ -935,7 +947,8 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 						h2.update({ buf, len2 });
 						ret = int(len2);
 					}
-				}))
+				});
+			if (!store_hit)
 			{
 				if (v1)
 				{
@@ -977,6 +990,11 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 			m_stats_counters.inc_stats_counter(counters::disk_hash_time, read_time);
 			m_stats_counters.inc_stats_counter(counters::disk_job_time, read_time);
 		}
+
+		// Recovery verification must cover the whole v1 piece from backing
+		// storage. Only now may later retries become ordinary repairs.
+		if (partfile_recovery && !j->error.ec && offset >= piece_size)
+			j->storage->set_partfile_repair(a.piece, false);
 
 		if (v1)
 			a.piece_hash = h.final();

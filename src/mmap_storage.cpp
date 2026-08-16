@@ -796,11 +796,8 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 		char dummy = 0;
 		std::vector<char> scratch;
-		bool const recovering_partfile = partfile_repair(piece);
-		bool missing_partfile = false;
-
 		int const ret = readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, piece, mode, flags, &ph, &sett, &scratch, &missing_partfile](file_index_t const file_index
+			, [this, piece, mode, flags, &ph, &sett, &scratch](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> const buf, storage_error& ec)
 		{
@@ -822,7 +819,6 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 						|| e == boost::asio::error::eof
 						|| e == lt::errors::file_too_short)
 					{
-						missing_partfile = true;
 						set_partfile_repair(piece, true);
 					}
 					ec.ec = e;
@@ -881,14 +877,6 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 			return ret;
 		});
-
-		// A successful read after the part-file-only download is the one
-		// verification attempt. Clear recovery mode before the torrent layer
-		// compares the hash; if it still fails, the next download is a normal
-		// full-piece repair. Keep recovery mode only while part-file data is
-		// still missing.
-		if (recovering_partfile && !missing_partfile)
-			set_partfile_repair(piece, false);
 
 		return ret;
 	}
