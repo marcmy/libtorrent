@@ -19,6 +19,37 @@ jobs:
           ref: custom/qbittorrent-2.1
           fetch-depth: 0
 
+      - name: Fix helper test anchor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/auxiliary-recovery-patch.py')
+          s = p.read_text()
+          old = '''replace_once(
+              "test/test_part_file.cpp",
+              "\\t\\tpf.free_piece(10_piece);\\n"
+              "\\n"
+              "\\t\\tpf.flush_metadata(ec);\\n",
+              "\\t\\tpf.free_piece(10_piece);\\n"
+              "\\t\\tTEST_CHECK(!pf.has_piece(10_piece));\\n"
+              "\\n"
+              "\\t\\tpf.flush_metadata(ec);\\n")'''
+          new = '''replace_in_section(
+              "test/test_part_file.cpp",
+              "TORRENT_TEST(part_file)\\n",
+              "\\nTORRENT_TEST(part_file_short_read)",
+              "\\t\\tpf.free_piece(10_piece);\\n"
+              "\\n"
+              "\\t\\tpf.flush_metadata(ec);\\n",
+              "\\t\\tpf.free_piece(10_piece);\\n"
+              "\\t\\tTEST_CHECK(!pf.has_piece(10_piece));\\n"
+              "\\n"
+              "\\t\\tpf.flush_metadata(ec);\\n")'''
+          if old not in s:
+              raise SystemExit('ambiguous free_piece anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
       - name: Apply source patch
         run: python3 .github/auxiliary-recovery-patch.py
 
