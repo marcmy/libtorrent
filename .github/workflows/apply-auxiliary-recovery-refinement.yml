@@ -1,0 +1,35 @@
+name: Apply auxiliary recovery refinement
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/apply-auxiliary-recovery-refinement.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+
+      - name: Apply refinement
+        run: python3 .github/refine-auxiliary-recovery.py
+
+      - name: Validate patch
+        run: git diff --check
+
+      - name: Commit refinement and remove one-shot helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/refine-auxiliary-recovery.py .github/workflows/apply-auxiliary-recovery-refinement.yml
+          git add include/libtorrent/aux_/part_file.hpp src/part_file.cpp src/pread_storage.cpp
+          git commit -m "Refine auxiliary recovery detection"
+          git push origin HEAD:custom/qbittorrent-2.1
