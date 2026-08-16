@@ -19,12 +19,13 @@ jobs:
           ref: custom/qbittorrent-2.1
           fetch-depth: 0
 
-      - name: Fix helper test anchor
+      - name: Fix helper anchors
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('.github/auxiliary-recovery-patch.py')
           s = p.read_text()
+
           old = '''replace_once(
               "test/test_part_file.cpp",
               "\\t\\tpf.free_piece(10_piece);\\n"
@@ -47,7 +48,16 @@ jobs:
               "\\t\\tpf.flush_metadata(ec);\\n")'''
           if old not in s:
               raise SystemExit('ambiguous free_piece anchor not found')
-          p.write_text(s.replace(old, new, 1))
+          s = s.replace(old, new, 1)
+
+          # Four pread routing sites are inside readwrite callbacks. hash2 is
+          # direct code with one less indentation level, so patch it separately.
+          s = s.replace('''    5)\n\n# If old-style/.unwanted backing disappears during a live check,''', '''    4)\n\nreplace_once(\n    "src/pread_storage.cpp",\n    "\\t\\tif (file_index < m_file_priority.end_index()\\n"\n    "\\t\\t\\t&& m_file_priority[file_index] == dont_download\\n"\n    "\\t\\t\\t&& use_partfile(file_index))\\n",\n    "\\t\\tif (use_partfile_for_piece(file_index, piece))\\n")\n\n# If old-style/.unwanted backing disappears during a live check,''', 1)
+
+          # mmap likewise has three callback sites plus direct hash2.
+          s = s.replace('''    4)\n\n# mmap read needs piece captured now that routing is per-piece.''', '''    3)\n\nreplace_once(\n    "src/mmap_storage.cpp",\n    "\\t\\tif (file_index < m_file_priority.end_index()\\n"\n    "\\t\\t\\t&& m_file_priority[file_index] == dont_download\\n"\n    "\\t\\t\\t&& use_partfile(file_index))\\n",\n    "\\t\\tif (use_partfile_for_piece(file_index, piece))\\n")\n\n# mmap read needs piece captured now that routing is per-piece.''', 1)
+
+          p.write_text(s)
           PY
 
       - name: Apply source patch
