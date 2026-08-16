@@ -145,11 +145,17 @@ namespace libtorrent::aux {
 
 	void pread_storage::commit_partfile_recovery(piece_index_t const piece)
 	{
+		filenames const fs = names();
 		for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
 		{
 			file_index_t const file = slice.file_index;
-			if (files().pad_file_at(file) || !skipped_file(file)) continue;
-			use_partfile(file, true);
+			if (fs.pad_file_at(file) || !skipped_file(file) || use_partfile(file)) continue;
+
+			file_status st;
+			error_code stat_error;
+			stat_file(fs.file_path(file, m_save_path), &st, stat_error);
+			if (stat_error || st.file_size < slice.offset + slice.size)
+				use_partfile(file, true);
 		}
 	}
 
@@ -482,7 +488,7 @@ namespace libtorrent::aux {
 			if (rd.have_pieces[piece]) continue;
 
 			bool has_wanted = false;
-			bool has_skipped = false;
+			bool auxiliary_backing_missing = false;
 			bool wanted_backing_complete = true;
 
 			for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
@@ -494,7 +500,18 @@ namespace libtorrent::aux {
 					&& m_file_priority[file] == dont_download;
 				if (skipped)
 				{
-					has_skipped = true;
+					if (use_partfile(file))
+					{
+						if (!m_part_file || !m_part_file->has_piece(piece))
+							auxiliary_backing_missing = true;
+					}
+					else
+					{
+						error_code stat_error;
+						auto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
+						if (stat_error || actual_size < slice.offset + slice.size)
+							auxiliary_backing_missing = true;
+					}
 					continue;
 				}
 
@@ -508,10 +525,10 @@ namespace libtorrent::aux {
 				}
 			}
 
-			// The missing auxiliary bytes may have lived in .parts or in an
-			// old-style/qBittorrent .unwanted file. If wanted backing is still
-			// physically complete, recover only the priority-0 ranges into .parts.
-			if (has_wanted && has_skipped && wanted_backing_complete)
+			// Protect only when the missing piece can actually be explained by
+			// absent auxiliary backing. This avoids blaming peers for a recovery
+			// hash that failed because wanted bytes were genuinely corrupt.
+			if (has_wanted && auxiliary_backing_missing && wanted_backing_complete)
 				set_partfile_repair(piece, true);
 		}
 
