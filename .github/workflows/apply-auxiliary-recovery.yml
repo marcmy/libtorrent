@@ -19,47 +19,6 @@ jobs:
           ref: custom/qbittorrent-2.1
           fetch-depth: 0
 
-      - name: Fix helper anchors
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/auxiliary-recovery-patch.py')
-          s = p.read_text()
-
-          old = '''replace_once(
-              "test/test_part_file.cpp",
-              "\\t\\tpf.free_piece(10_piece);\\n"
-              "\\n"
-              "\\t\\tpf.flush_metadata(ec);\\n",
-              "\\t\\tpf.free_piece(10_piece);\\n"
-              "\\t\\tTEST_CHECK(!pf.has_piece(10_piece));\\n"
-              "\\n"
-              "\\t\\tpf.flush_metadata(ec);\\n")'''
-          new = '''replace_in_section(
-              "test/test_part_file.cpp",
-              "TORRENT_TEST(part_file)\\n",
-              "\\nTORRENT_TEST(part_file_short_read)",
-              "\\t\\tpf.free_piece(10_piece);\\n"
-              "\\n"
-              "\\t\\tpf.flush_metadata(ec);\\n",
-              "\\t\\tpf.free_piece(10_piece);\\n"
-              "\\t\\tTEST_CHECK(!pf.has_piece(10_piece));\\n"
-              "\\n"
-              "\\t\\tpf.flush_metadata(ec);\\n")'''
-          if old not in s:
-              raise SystemExit('ambiguous free_piece anchor not found')
-          s = s.replace(old, new, 1)
-
-          # Four pread routing sites are inside readwrite callbacks. hash2 is
-          # direct code with one less indentation level, so patch it separately.
-          s = s.replace('''    5)\n\n# If old-style/.unwanted backing disappears during a live check,''', '''    4)\n\nreplace_once(\n    "src/pread_storage.cpp",\n    "\\t\\tif (file_index < m_file_priority.end_index()\\n"\n    "\\t\\t\\t&& m_file_priority[file_index] == dont_download\\n"\n    "\\t\\t\\t&& use_partfile(file_index))\\n",\n    "\\t\\tif (use_partfile_for_piece(file_index, piece))\\n")\n\n# If old-style/.unwanted backing disappears during a live check,''', 1)
-
-          # mmap likewise has three callback sites plus direct hash2.
-          s = s.replace('''    4)\n\n# mmap read needs piece captured now that routing is per-piece.''', '''    3)\n\nreplace_once(\n    "src/mmap_storage.cpp",\n    "\\t\\tif (file_index < m_file_priority.end_index()\\n"\n    "\\t\\t\\t&& m_file_priority[file_index] == dont_download\\n"\n    "\\t\\t\\t&& use_partfile(file_index))\\n",\n    "\\t\\tif (use_partfile_for_piece(file_index, piece))\\n")\n\n# mmap read needs piece captured now that routing is per-piece.''', 1)
-
-          p.write_text(s)
-          PY
-
       - name: Apply source patch
         run: python3 .github/auxiliary-recovery-patch.py
 
@@ -70,13 +29,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/auxiliary-recovery-patch.py .github/workflows/apply-auxiliary-recovery.yml
-          git add include/libtorrent/aux_/part_file.hpp \
-                  include/libtorrent/aux_/pread_storage.hpp \
-                  include/libtorrent/aux_/mmap_storage.hpp \
+          git rm -f .github/auxiliary-recovery-patch.py .github/workflows/apply-auxiliary-recovery.yml
+          git add include/libtorrent/aux_/pread_storage.hpp \
                   src/part_file.cpp \
                   src/pread_storage.cpp \
-                  src/mmap_storage.cpp \
+                  src/pread_disk_io.cpp \
                   test/test_part_file.cpp
           git commit -m "Recover deleted unwanted-file boundaries through partfile"
           git push origin HEAD:custom/qbittorrent-2.1
