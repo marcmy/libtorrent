@@ -1,0 +1,151 @@
+name: Apply backing-storage partfile recovery fix
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/apply-partfile-recovery-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+
+      - name: Apply focused source patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          # Expose recovery state to mmap_disk_io, which owns the full hash/write lifecycle.
+          p = Path("include/libtorrent/aux_/mmap_storage.hpp")
+          s = p.read_text()
+          s = replace_once(
+              s,
+              "\t\tbool v1() const { return m_v1; }\n\t\tbool v2() const { return m_v2; }\n",
+              "\t\tbool v1() const { return m_v1; }\n\t\tbool v2() const { return m_v2; }\n\n"
+              "\t\t// A v1 piece whose skipped-file bytes disappeared from the part file.\n"
+              "\t\t// mmap_disk_io keeps this state active until recovery writes drain and\n"
+              "\t\t// a full backing-storage hash has completed.\n"
+              "\t\tbool partfile_repair(piece_index_t piece) const;\n"
+              "\t\tvoid set_partfile_repair(piece_index_t piece, bool enabled);\n",
+              "publish partfile recovery state")
+          s = replace_once(
+              s,
+              "\t\tvoid need_partfile();\n\t\tbool partfile_repair(piece_index_t piece) const;\n\t\tvoid set_partfile_repair(piece_index_t piece, bool enabled);\n",
+              "\t\tvoid need_partfile();\n",
+              "remove private recovery declarations")
+          p.write_text(s)
+
+          # Storage detects missing part-file data and protects wanted-file writes,
+          # but must no longer clear recovery after an individual 16 KiB hash read.
+          p = Path("src/mmap_storage.cpp")
+          s = p.read_text()
+          s = replace_once(
+              s,
+              "\t\tbool const recovering_partfile = partfile_repair(piece);\n\t\tbool missing_partfile = false;\n\n",
+              "",
+              "remove per-block recovery bookkeeping")
+          s = replace_once(
+              s,
+              "\t\t\t, [this, piece, mode, flags, &ph, &sett, &scratch, &missing_partfile](file_index_t const file_index\n",
+              "\t\t\t, [this, piece, mode, flags, &ph, &sett, &scratch](file_index_t const file_index\n",
+              "remove missing_partfile lambda capture")
+          s = replace_once(
+              s,
+              "\t\t\t\t\t\tmissing_partfile = true;\n\t\t\t\t\t\tset_partfile_repair(piece, true);\n",
+              "\t\t\t\t\t\tset_partfile_repair(piece, true);\n",
+              "keep detection without local flag")
+          s = replace_once(
+              s,
+              "\n\t\t// A successful read after the part-file-only download is the one\n"
+              "\t\t// verification attempt. Clear recovery mode before the torrent layer\n"
+              "\t\t// compares the hash; if it still fails, the next download is a normal\n"
+              "\t\t// full-piece repair. Keep recovery mode only while part-file data is\n"
+              "\t\t// still missing.\n"
+              "\t\tif (recovering_partfile && !missing_partfile)\n"
+              "\t\t\tset_partfile_repair(piece, false);\n",
+              "",
+              "remove premature recovery clear")
+          p.write_text(s)
+
+          # mmap_disk_io owns orchestration: fence recovery verification behind all
+          # outstanding writes, bypass the in-memory store buffer, and clear recovery
+          # only after a complete backing-storage v1 hash succeeds.
+          p = Path("src/mmap_disk_io.cpp")
+          s = p.read_text()
+
+          start = s.index("\tstatus_t mmap_disk_io::do_job(aux::job::hash& a, aux::mmap_disk_job* j)\n")
+          end = s.index("\n\tstatus_t mmap_disk_io::do_job(aux::job::hash2& a, aux::mmap_disk_job* j)\n", start)
+          h = s[start:end]
+          h = replace_once(
+              h,
+              "\t\tbool const v1 = bool(j->flags & disk_interface::v1_hash);\n\t\tbool const v2 = !a.block_hashes.empty();\n",
+              "\t\tbool const v1 = bool(j->flags & disk_interface::v1_hash);\n\t\tbool const v2 = !a.block_hashes.empty();\n"
+              "\t\tbool const partfile_recovery = v1 && j->storage->partfile_repair(a.piece);\n",
+              "capture recovery state for full hash")
+          h = replace_once(
+              h,
+              "\t\t\tif (!m_store_buffer.get({ j->storage->storage_index(), a.piece, offset }\n",
+              "\t\t\tbool const store_hit = !partfile_recovery\n"
+              "\t\t\t\t&& m_store_buffer.get({ j->storage->storage_index(), a.piece, offset }\n",
+              "bypass store buffer during recovery")
+          h = replace_once(
+              h,
+              "\t\t\t\t}))\n\t\t\t{\n",
+              "\t\t\t\t});\n\t\t\tif (!store_hit)\n\t\t\t{\n",
+              "finish store-buffer bypass expression")
+          h = replace_once(
+              h,
+              "\n\t\tif (v1)\n\t\t\ta.piece_hash = h.final();\n",
+              "\n\t\t// Recovery verification must cover the whole v1 piece from backing\n"
+              "\t\t// storage. Only now may later retries become ordinary repairs.\n"
+              "\t\tif (partfile_recovery && !j->error.ec && offset >= piece_size)\n"
+              "\t\t\tj->storage->set_partfile_repair(a.piece, false);\n\n"
+              "\t\tif (v1)\n\t\t\ta.piece_hash = h.final();\n",
+              "clear recovery after full backing hash")
+          s = s[:start] + h + s[end:]
+
+          start = s.index("\tvoid mmap_disk_io::async_hash(storage_index_t const storage\n")
+          end = s.index("\n\tvoid mmap_disk_io::async_hash2(storage_index_t const storage\n", start)
+          ah = s[start:end]
+          ah = replace_once(
+              ah,
+              "\t\tadd_job(j);\n",
+              "\t\t// A part-file recovery hash must run after every queued recovery write\n"
+              "\t\t// has drained. Otherwise a wanted-file write could observe recovery\n"
+              "\t\t// already cleared, and the hash could incorrectly consume peer bytes\n"
+              "\t\t// still present in m_store_buffer instead of validating disk state.\n"
+              "\t\tif (j->storage->partfile_repair(piece))\n"
+              "\t\t{\n"
+              "\t\t\tadd_fence_job(j);\n"
+              "\t\t\treturn;\n"
+              "\t\t}\n\n"
+              "\t\tadd_job(j);\n",
+              "fence recovery verification")
+          s = s[:start] + ah + s[end:]
+          p.write_text(s)
+
+      - name: Show patch
+        run: git diff --check && git diff -- include/libtorrent/aux_/mmap_storage.hpp src/mmap_storage.cpp src/mmap_disk_io.cpp
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add include/libtorrent/aux_/mmap_storage.hpp src/mmap_storage.cpp src/mmap_disk_io.cpp
+          git commit -m "Fix backing-storage partfile recovery verification"
+          git push origin HEAD:custom/qbittorrent-2.1
