@@ -119,6 +119,12 @@ namespace libtorrent::aux {
 		bool v1() const { return m_v1; }
 		bool v2() const { return m_v2; }
 
+		// A v1 piece whose skipped-file bytes disappeared from the part file.
+		// pread_disk_io keeps this active while recovery writes are flushed and
+		// verifies the piece from backing storage instead of the write cache.
+		bool partfile_repair(piece_index_t piece) const;
+		void set_partfile_repair(piece_index_t piece, bool enabled);
+
 		// SHA-256 block hashes deposited by the v2 hash queue
 		// (disk_cache::drain_v2_hash_queue) for later consumption by hash and
 		// hash2 jobs, avoiding a read-back from disk. A block whose hash
@@ -190,6 +196,9 @@ namespace libtorrent::aux {
 
 		// used for skipped files
 		std::unique_ptr<part_file> m_part_file;
+
+		mutable std::mutex m_partfile_repair_mutex;
+		aux::vector<bool, piece_index_t> m_partfile_repair;
 
 		// this is a bitfield with one bit per file. A bit being set means
 		// we've written to that file previously. If we do write to a file

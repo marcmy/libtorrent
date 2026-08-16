@@ -106,6 +106,21 @@ namespace libtorrent::aux {
 			, files().num_pieces(), files().piece_length());
 	}
 
+	bool pread_storage::partfile_repair(piece_index_t const piece) const
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty()) return false;
+		return m_partfile_repair[piece];
+	}
+
+	void pread_storage::set_partfile_repair(piece_index_t const piece, bool const enabled)
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty())
+			m_partfile_repair.resize(files().num_pieces(), false);
+		m_partfile_repair[piece] = enabled;
+	}
+
 	void pread_storage::set_file_priority(settings_interface const& sett
 		, vector<download_priority_t, file_index_t>& prio
 		, storage_error& ec)
@@ -462,7 +477,7 @@ namespace libtorrent::aux {
 		std::this_thread::sleep_for(milliseconds(100));
 #endif
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, flags, &sett](file_index_t const file_index
+			, [this, piece, mode, flags, &sett](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char> buf, storage_error& ec)
 		{
@@ -481,6 +496,12 @@ namespace libtorrent::aux {
 
 				if (e)
 				{
+					if ((flags & disk_interface::v1_hash)
+						&& (e == boost::system::errc::no_such_file_or_directory
+							|| e == boost::asio::error::eof
+							|| e == lt::errors::file_too_short))
+						set_partfile_repair(piece, true);
+
 					ec.ec = e;
 					ec.file(file_index);
 					ec.operation = operation_t::partfile_read;
@@ -520,7 +541,7 @@ namespace libtorrent::aux {
 #endif
 		auto const write_mode = sett.get_int(settings_pack::disk_io_write_mode);
 		return readwrite_vec(files(), buffers, piece, offset, error
-			, [this, mode, &sett, write_mode](file_index_t const file_index
+			, [this, piece, mode, &sett, write_mode](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<span<char const> const> const bufs, storage_error& ec)
 		{
@@ -546,6 +567,9 @@ namespace libtorrent::aux {
 				}
 				return ret;
 			}
+
+			if (partfile_repair(piece))
+				return bufs_size(bufs);
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -584,7 +608,7 @@ namespace libtorrent::aux {
 #endif
 		auto const write_mode = sett.get_int(settings_pack::disk_io_write_mode);
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, &sett, write_mode](file_index_t const file_index
+			, [this, piece, mode, &sett, write_mode](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
 		{
@@ -612,6 +636,9 @@ namespace libtorrent::aux {
 				}
 				return ret;
 			}
+
+			if (partfile_repair(piece))
+				return int(buf.size());
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -672,6 +699,11 @@ namespace libtorrent::aux {
 
 				if (e)
 				{
+					if (e == boost::system::errc::no_such_file_or_directory
+						|| e == boost::asio::error::eof
+						|| e == lt::errors::file_too_short)
+						set_partfile_repair(piece, true);
+
 					ec.ec = e;
 					ec.file(file_index);
 					ec.operation = operation_t::partfile_read;
