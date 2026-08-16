@@ -1183,6 +1183,7 @@ status_t pread_disk_io::do_job(aux::job::hash& a, aux::pread_disk_job* j)
 			}
 
 			j->storage->drop_precomputed_v2(a.piece);
+			j->storage->commit_partfile_recovery(a.piece);
 			j->storage->set_partfile_repair(a.piece, false);
 
 			std::int64_t const read_time = total_microseconds(clock_type::now() - start_time);

@@ -124,6 +124,9 @@ namespace libtorrent::aux {
 		// verifies the piece from backing storage instead of the write cache.
 		bool partfile_repair(piece_index_t piece) const;
 		void set_partfile_repair(piece_index_t piece, bool enabled);
+		// Called by the fenced recovery hash after a complete backing read.
+		// Priority-0 files touched by this piece now use .parts permanently.
+		void commit_partfile_recovery(piece_index_t piece);
 
 		// SHA-256 block hashes deposited by the v2 hash queue
 		// (disk_cache::drain_v2_hash_queue) for later consumption by hash and
@@ -156,6 +159,10 @@ namespace libtorrent::aux {
 		bool m_in_fence_flush = false;
 
 		void need_partfile();
+		bool skipped_file(file_index_t file) const;
+		bool use_partfile_for_piece(file_index_t file, piece_index_t piece) const;
+		void mark_auxiliary_read_failure(file_index_t file, piece_index_t piece
+			, error_code const& ec);
 
 		renamed_files m_renamed_files;
 

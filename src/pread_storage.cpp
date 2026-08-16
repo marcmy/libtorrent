@@ -121,6 +121,38 @@ namespace libtorrent::aux {
 		m_partfile_repair[piece] = enabled;
 	}
 
+	bool pread_storage::skipped_file(file_index_t const file) const
+	{
+		return file < m_file_priority.end_index()
+			&& m_file_priority[file] == dont_download;
+	}
+
+	bool pread_storage::use_partfile_for_piece(file_index_t const file
+		, piece_index_t const piece) const
+	{
+		return skipped_file(file) && (use_partfile(file) || partfile_repair(piece));
+	}
+
+	void pread_storage::mark_auxiliary_read_failure(file_index_t const file
+		, piece_index_t const piece, error_code const& e)
+	{
+		if (!m_v1 || !skipped_file(file)) return;
+		if (e == boost::system::errc::no_such_file_or_directory
+			|| e == boost::asio::error::eof
+			|| e == lt::errors::file_too_short)
+			set_partfile_repair(piece, true);
+	}
+
+	void pread_storage::commit_partfile_recovery(piece_index_t const piece)
+	{
+		for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
+		{
+			file_index_t const file = slice.file_index;
+			if (files().pad_file_at(file) || !skipped_file(file)) continue;
+			use_partfile(file, true);
+		}
+	}
+
 	void pread_storage::set_file_priority(settings_interface const& sett
 		, vector<download_priority_t, file_index_t>& prio
 		, storage_error& ec)
@@ -201,10 +233,8 @@ namespace libtorrent::aux {
 			ec.ec.clear();
 			m_file_priority[i] = new_prio;
 
-			if (m_file_priority[i] == dont_download && use_partfile(i))
-			{
+			if (m_file_priority[i] == dont_download)
 				need_partfile();
-			}
 		}
 		if (m_part_file) m_part_file->flush_metadata(ec.ec);
 		if (ec)
@@ -261,6 +291,7 @@ namespace libtorrent::aux {
 			if (m_file_priority[i] != dont_download || fs.pad_file_at(i))
 				continue;
 
+			need_partfile();
 			error_code err;
 			auto const size = m_stat_cache.get_filesize(i, fs, m_save_path, err);
 			if (!err && size > 0)
@@ -451,7 +482,7 @@ namespace libtorrent::aux {
 			if (rd.have_pieces[piece]) continue;
 
 			bool has_wanted = false;
-			bool has_partfile = false;
+			bool has_skipped = false;
 			bool wanted_backing_complete = true;
 
 			for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
@@ -463,7 +494,7 @@ namespace libtorrent::aux {
 					&& m_file_priority[file] == dont_download;
 				if (skipped)
 				{
-					if (use_partfile(file)) has_partfile = true;
+					has_skipped = true;
 					continue;
 				}
 
@@ -477,13 +508,10 @@ namespace libtorrent::aux {
 				}
 			}
 
-			// Only protect a mixed wanted/.parts piece when the wanted backing
-			// file is still physically complete. If a wanted file is genuinely
-			// missing or short, normal repair must be allowed to create it.
-			// If wanted bytes merely hash wrong, the protected backing-storage
-			// verification will fail, clear recovery, and the next attempt becomes
-			// an ordinary repair.
-			if (has_wanted && has_partfile && wanted_backing_complete)
+			// The missing auxiliary bytes may have lived in .parts or in an
+			// old-style/qBittorrent .unwanted file. If wanted backing is still
+			// physically complete, recover only the priority-0 ranges into .parts.
+			if (has_wanted && has_skipped && wanted_backing_complete)
 				set_partfile_repair(piece, true);
 		}
 
@@ -544,9 +572,7 @@ namespace libtorrent::aux {
 			// reading from a pad file yields zeroes
 			if (files().pad_file_at(file_index)) return read_zeroes(buf);
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -571,7 +597,11 @@ namespace libtorrent::aux {
 			}
 
 			auto handle = open_file(sett, file_index, mode, ec);
-			if (ec) return -1;
+			if (ec)
+			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
+				return -1;
+			}
 
 			// set this unconditionally in case the upper layer would like to treat
 			// short reads as errors
@@ -579,6 +609,7 @@ namespace libtorrent::aux {
 
 			int const ret = pread_all(handle->fd(), buf, file_offset, ec.ec);
 			if (ec.ec) {
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
 				ec.file(file_index);
 				return ret;
 			}
@@ -609,9 +640,7 @@ namespace libtorrent::aux {
 			if (files().pad_file_at(file_index))
 				return bufs_size(bufs);
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -676,9 +705,7 @@ namespace libtorrent::aux {
 			if (files().pad_file_at(file_index))
 				return int(buf.size());
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -748,9 +775,7 @@ namespace libtorrent::aux {
 			if (files().pad_file_at(file_index))
 				return hash_zeroes(ph, buf.size());
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				error_code e;
 				peer_request map = files().map_file(file_index, file_offset, 0);
@@ -772,12 +797,17 @@ namespace libtorrent::aux {
 			}
 
 			auto handle = open_file(sett, file_index, mode, ec);
-			if (ec) return -1;
+			if (ec)
+			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
+				return -1;
+			}
 
 			scratch_buffer.resize(std::size_t(buf.size()));
 			int ret = pread_all(handle->fd(), scratch_buffer, file_offset, ec.ec);
 			if (ec.ec)
 			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
 				ec.file(file_index);
 				ec.operation = operation_t::file_read;
 				return ret;
@@ -809,9 +839,7 @@ namespace libtorrent::aux {
 		TORRENT_ASSERT(file_offset >= 0);
 		TORRENT_ASSERT(!files().pad_file_at(file_index));
 
-		if (file_index < m_file_priority.end_index()
-			&& m_file_priority[file_index] == dont_download
-			&& use_partfile(file_index))
+		if (use_partfile_for_piece(file_index, piece))
 		{
 			error_code e;
 			peer_request map = files().map_file(file_index, file_offset, 0);

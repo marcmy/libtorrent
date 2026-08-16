@@ -160,6 +160,9 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		slot_index_t const slot = (i == m_piece_map.end())
 			? allocate_slot(piece) : i->second;
+		// The on-disk file may have been deleted while this part_file stayed
+		// alive. Rewriting an already-known slot must recreate the header too.
+		m_dirty_metadata = true;
 
 		l.unlock();
 
@@ -178,6 +181,9 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		slot_index_t const slot = (i == m_piece_map.end())
 			? allocate_slot(piece) : i->second;
+		// The on-disk file may have been deleted while this part_file stayed
+		// alive. Rewriting an already-known slot must recreate the header too.
+		m_dirty_metadata = true;
 
 		l.unlock();
 

@@ -313,3 +313,53 @@ TORRENT_TEST(posix_part_file_short_read)
 {
 	test_short_read<aux::posix_part_file>("posix_partfile_short_read_dir");
 }
+
+
+TORRENT_TEST(part_file_live_delete_recreate)
+{
+	error_code ec;
+	std::string const cwd = complete(".");
+	std::string const dir = combine_path(cwd, "partfile_live_delete_dir");
+	std::string const filename = combine_path(dir, "partfile.parts");
+	int const piece_size = 16 * 0x4000;
+
+	remove_all(dir, ec);
+	if (ec == boost::system::errc::no_such_file_or_directory) ec.clear();
+	TEST_CHECK(!ec);
+	create_directory(dir, ec);
+	TEST_CHECK(!ec);
+
+	std::array<char, 1024> buf;
+	for (int i = 0; i < int(buf.size()); ++i)
+		buf[std::size_t(i)] = static_cast<char>(i);
+
+	{
+		aux::part_file pf(dir, "partfile.parts", 100, piece_size);
+		TEST_EQUAL(pf.write(buf, 10_piece, 0, ec), int(buf.size()));
+		TEST_CHECK(!ec);
+		pf.flush_metadata(ec);
+		TEST_CHECK(!ec);
+
+		remove(filename, ec);
+		TEST_CHECK(!ec);
+
+		// The in-memory map still knows piece 10. Recreate the same slot and
+		// flush; the header must be written again as well as the payload.
+		TEST_EQUAL(pf.write(buf, 10_piece, 0, ec), int(buf.size()));
+		TEST_CHECK(!ec);
+		pf.flush_metadata(ec);
+		TEST_CHECK(!ec);
+	}
+
+	{
+		aux::part_file pf(dir, "partfile.parts", 100, piece_size);
+		std::array<char, 1024> out;
+		out.fill(0);
+		TEST_EQUAL(pf.read(out, 10_piece, 0, ec), int(out.size()));
+		TEST_CHECK(!ec);
+		TEST_CHECK(out == buf);
+	}
+
+	remove_all(dir, ec);
+	TEST_CHECK(!ec);
+}
