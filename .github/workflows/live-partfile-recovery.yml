@@ -1,0 +1,41 @@
+name: Apply live part-file recovery
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/live-partfile-recovery.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+
+      - name: Apply focused source changes
+        run: python3 .github/scripts/apply-live-partfile-recovery.py
+
+      - name: Commit source changes and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "marcmy"
+          git config user.email "21000174+marcmy@users.noreply.github.com"
+          git rm .github/workflows/live-partfile-recovery.yml \
+                 .github/scripts/apply-live-partfile-recovery.py
+          git add include/libtorrent/aux_/file_progress.hpp \
+                  include/libtorrent/aux_/torrent.hpp \
+                  src/file_progress.cpp \
+                  src/mmap_storage.cpp \
+                  src/peer_connection.cpp \
+                  src/pread_storage.cpp \
+                  src/torrent.cpp \
+                  test/test_file_progress.cpp
+          git commit -m "Recover from live part-file deletion"
+          git push origin HEAD:custom/qbittorrent-2.1
