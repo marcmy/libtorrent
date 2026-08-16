@@ -149,6 +149,8 @@ namespace libtorrent::aux {
 		storage_index_t m_storage_index{0};
 
 		void need_partfile();
+		bool partfile_repair(piece_index_t piece) const;
+		void set_partfile_repair(piece_index_t piece, bool enabled);
 
 		renamed_files m_renamed_files;
 
@@ -189,6 +191,13 @@ namespace libtorrent::aux {
 
 		// used for skipped files
 		std::unique_ptr<part_file> m_part_file;
+
+		// A missing part-file range discovered while hashing means the
+		// piece cannot be verified, not that the wanted-file bytes are bad.
+		// Keep those pieces in a one-shot recovery mode: their next download
+		// only rebuilds skipped-file data in the part file.
+		mutable std::mutex m_partfile_repair_mutex;
+		aux::vector<bool, piece_index_t> m_partfile_repair;
 
 		// this is a bitfield with one bit per file. A bit being set means
 		// we've written to that file previously. If we do write to a file

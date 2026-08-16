@@ -260,12 +260,19 @@ namespace libtorrent::aux {
 	aux::file_handle part_file::open_file(aux::open_mode_t const mode, error_code& ec) try
 	{
 		std::string const fn = combine_path(m_path, m_name);
+		aux::open_mode_t file_mode = mode;
+		// Part files reserve piece-sized slots but commonly contain only a
+		// small boundary range in each slot. Mark write-opened part files
+		// sparse so unwritten slot ranges do not consume physical disk space.
+		if (file_mode & aux::open_mode::write)
+			file_mode |= aux::open_mode::sparse;
+
 		try {
-			return {fn, 0, mode};
+			return {fn, 0, file_mode};
 		}
 		catch (storage_error const& e)
 		{
-			if ((mode & aux::open_mode::write)
+			if ((file_mode & aux::open_mode::write)
 				&& e.ec == boost::system::errc::no_such_file_or_directory)
 			{
 				// this means the directory the file is in doesn't exist.
@@ -273,7 +280,7 @@ namespace libtorrent::aux {
 				ec.clear();
 				create_directories(m_path, ec);
 				if (ec) return {};
-				return {fn, 0, mode};
+				return {fn, 0, file_mode};
 			}
 			return {};
 		}

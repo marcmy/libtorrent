@@ -27,14 +27,6 @@ see LICENSE file.
 #include <cstdio>
 #include <optional>
 
-#ifdef TORRENT_WINDOWS
-#include "libtorrent/aux_/win_util.hpp"
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
 #include "libtorrent/aux_/disable_warnings_push.hpp"
 
 #include "libtorrent/aux_/disable_warnings_pop.hpp"
@@ -56,33 +48,6 @@ see LICENSE file.
 namespace libtorrent::aux {
 
 namespace {
-
-#ifdef TORRENT_WINDOWS
-struct wofutil
-{
-	static constexpr char const* library_name = "Wofutil.dll";
-};
-
-// WOF_PROVIDER_FILE from the Windows SDK. Keep this local so detecting WOF
-// remains runtime-only and does not require wofapi.h on older SDK targets.
-constexpr ULONG wof_provider_file = 0x00000002;
-
-bool is_wof_file_provider(std::string const& path)
-{
-	using wof_is_external_file_t = HRESULT(WINAPI*)(LPCWSTR, PBOOL, PULONG, PVOID, PULONG);
-	auto const wof_is_external_file =
-		get_library_procedure<wofutil, wof_is_external_file_t>("WofIsExternalFile");
-	if (wof_is_external_file == nullptr) return false;
-
-	auto const native_path = convert_to_native_path_string(path);
-	BOOL external = FALSE;
-	ULONG provider = 0;
-	HRESULT const result = wof_is_external_file(native_path.c_str()
-		, &external, &provider, nullptr, nullptr);
-
-	return SUCCEEDED(result) && external != FALSE && provider == wof_provider_file;
-}
-#endif
 
 error_code translate_error(std::error_code const& err, bool const write)
 {
@@ -188,6 +153,21 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 			m_part_file_dir.empty() ? m_save_path : combine_path(m_save_path, m_part_file_dir)
 			, m_part_file_name
 			, files().num_pieces(), files().piece_length());
+	}
+
+	bool mmap_storage::partfile_repair(piece_index_t const piece) const
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty()) return false;
+		return m_partfile_repair[piece];
+	}
+
+	void mmap_storage::set_partfile_repair(piece_index_t const piece, bool const enabled)
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty())
+			m_partfile_repair.resize(files().num_pieces(), false);
+		m_partfile_repair[piece] = enabled;
 	}
 
 	void mmap_storage::set_file_priority(settings_interface const& sett
@@ -711,7 +691,7 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 		std::this_thread::sleep_for(milliseconds(100));
 #endif
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, flags, &sett](file_index_t const file_index
+			, [this, piece, mode, flags, &sett](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
 		{
@@ -740,6 +720,14 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 				}
 				return ret;
 			}
+
+			// This piece was made incomplete only because skipped-file data
+			// disappeared from the part file. Rebuild that auxiliary data without
+			// rewriting bytes that already exist in wanted files. This is
+			// especially important for WOF-backed files, where any write may
+			// materialize the whole compressed file.
+			if (partfile_repair(piece))
+				return int(buf.size());
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -808,9 +796,11 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 		char dummy = 0;
 		std::vector<char> scratch;
+		bool const recovering_partfile = partfile_repair(piece);
+		bool missing_partfile = false;
 
-		return readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, mode, flags, &ph, &sett, &scratch](file_index_t const file_index
+		int const ret = readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
+			, [this, piece, mode, flags, &ph, &sett, &scratch, &missing_partfile](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> const buf, storage_error& ec)
 		{
@@ -828,6 +818,11 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 				if (e)
 				{
+					if (e == boost::system::errc::no_such_file_or_directory)
+					{
+						missing_partfile = true;
+						set_partfile_repair(piece, true);
+					}
 					ec.ec = e;
 					ec.operation = operation_t::partfile_read;
 					return -1;
@@ -884,6 +879,16 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 			return ret;
 		});
+
+		// A successful read after the part-file-only download is the one
+		// verification attempt. Clear recovery mode before the torrent layer
+		// compares the hash; if it still fails, the next download is a normal
+		// full-piece repair. Keep recovery mode only while part-file data is
+		// still missing.
+		if (recovering_partfile && !missing_partfile)
+			set_partfile_repair(piece, false);
+
+		return ret;
 	}
 
 	int mmap_storage::hash2(settings_interface const& sett
@@ -1046,14 +1051,6 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 		if (sett.get_bool(settings_pack::disk_disable_copy_on_write))
 			mode |= aux::open_mode::no_cow;
-
-#ifdef TORRENT_WINDOWS
-		// WOF file-provider compression (CompactOS/CompactGUI) is transparently
-		// readable through normal file I/O. Avoid mapping these files and use
-		// the mmap backend's existing pread/pwrite fallback instead.
-		if (is_wof_file_provider(names().file_path(file, m_save_path)))
-			mode |= aux::open_mode::no_mmap;
-#endif
 
 		if (files().file_size(file) / default_block_size
 			<= sett.get_int(settings_pack::mmap_file_size_cutoff))
