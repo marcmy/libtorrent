@@ -1,0 +1,288 @@
+name: Apply live part-file recovery
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/live-partfile-recovery.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+
+      - name: Apply focused source changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one anchor, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          # file_progress: add the inverse of update() so a formerly-HAVE
+          # piece can be demoted without corrupting per-file accounting.
+          replace_once(
+              "include/libtorrent/aux_/file_progress.hpp",
+              "\t\tvoid update(file_storage const& fs, piece_index_t index\n"
+              "\t\t\t, std::function<void(file_index_t)> const& completed_cb);\n",
+              "\t\tvoid update(file_storage const& fs, piece_index_t index\n"
+              "\t\t\t, std::function<void(file_index_t)> const& completed_cb);\n"
+              "\n"
+              "\t\t// Remove one previously-accounted HAVE piece. This is the exact\n"
+              "\t\t// inverse of update() and is used when backing data disappears.\n"
+              "\t\tvoid lost_piece(file_storage const& fs, piece_index_t index);\n")
+
+          replace_once(
+              "src/file_progress.cpp",
+              "\t}\n\n#if TORRENT_USE_INVARIANT_CHECKS\n\tvoid file_progress::check_invariant() const\n",
+              "\t}\n\n"
+              "\tvoid file_progress::lost_piece(file_storage const& fs, piece_index_t const index)\n"
+              "\t{\n"
+              "\t\tINVARIANT_CHECK;\n"
+              "\t\tif (m_file_progress.empty()) return;\n"
+              "\n"
+              "#if TORRENT_USE_INVARIANT_CHECKS\n"
+              "\t\t// Losing a piece that was never accounted as HAVE would underflow\n"
+              "\t\t// both the per-file and aggregate counters.\n"
+              "\t\tTORRENT_ASSERT(m_have_pieces.get_bit(index));\n"
+              "\t\tm_have_pieces.clear_bit(index);\n"
+              "#endif\n"
+              "\n"
+              "\t\tint const piece_size = fs.piece_length();\n"
+              "\t\tstd::int64_t off = std::int64_t(static_cast<int>(index)) * piece_size;\n"
+              "\t\tfile_index_t file_index = fs.file_index_at_offset(off);\n"
+              "\t\tstd::int64_t size = fs.piece_size(index);\n"
+              "\t\tfor (; size > 0; ++file_index)\n"
+              "\t\t{\n"
+              "\t\t\tstd::int64_t const file_offset = off - fs.file_offset(file_index);\n"
+              "\t\t\tTORRENT_ASSERT(file_index != fs.end_file());\n"
+              "\t\t\tTORRENT_ASSERT(file_offset <= fs.file_size(file_index));\n"
+              "\t\t\tstd::int64_t const sub = std::min(fs.file_size(file_index)\n"
+              "\t\t\t\t- file_offset, size);\n"
+              "\n"
+              "\t\t\tTORRENT_ASSERT(m_file_progress[file_index] >= sub);\n"
+              "\t\t\tif (!fs.pad_file_at(file_index))\n"
+              "\t\t\t{\n"
+              "\t\t\t\tTORRENT_ASSERT(m_total_on_disk >= sub);\n"
+              "\t\t\t\tm_total_on_disk -= sub;\n"
+              "\t\t\t}\n"
+              "\n"
+              "\t\t\tm_file_progress[file_index] -= sub;\n"
+              "\t\t\tsize -= sub;\n"
+              "\t\t\toff += sub;\n"
+              "\t\t\tTORRENT_ASSERT(size >= 0);\n"
+              "\t\t}\n"
+              "\t}\n\n"
+              "#if TORRENT_USE_INVARIANT_CHECKS\n\tvoid file_progress::check_invariant() const\n")
+
+          # One focused accounting test, including a pad-file overlap.
+          test = Path("test/test_file_progress.cpp")
+          text = test.read_text()
+          if "TORRENT_TEST(lost_piece)" in text:
+              raise SystemExit("test/test_file_progress.cpp: lost_piece test already exists")
+          text += r'''
+
+TORRENT_TEST(lost_piece)
+{
+	int const piece_size = 256;
+
+	file_storage fs;
+	fs.add_file("torrent/1", 200);
+	fs.add_file("torrent/2", 100, file_storage::flag_pad_file);
+	fs.add_file("torrent/3", 300);
+	fs.set_piece_length(piece_size);
+	fs.set_num_pieces(aux::calc_num_pieces(fs));
+
+	piece_index_t const piece{0};
+	aux::piece_picker picker(fs.total_size(), fs.piece_length());
+	picker.piece_flushed(piece);
+
+	aux::file_progress fp;
+	fp.init(picker, fs);
+
+	aux::vector<std::int64_t, file_index_t> before;
+	fp.export_progress(before);
+	TEST_EQUAL(before[file_index_t{0}], 200);
+	TEST_EQUAL(before[file_index_t{1}], 56);
+	TEST_EQUAL(before[file_index_t{2}], 0);
+	TEST_EQUAL(fp.total_on_disk(), 200);
+
+	fp.lost_piece(fs, piece);
+
+	aux::vector<std::int64_t, file_index_t> lost;
+	fp.export_progress(lost);
+	TEST_EQUAL(lost[file_index_t{0}], 0);
+	TEST_EQUAL(lost[file_index_t{1}], 0);
+	TEST_EQUAL(lost[file_index_t{2}], 0);
+	TEST_EQUAL(fp.total_on_disk(), 0);
+
+	fp.update(fs, piece, std::function<void(file_index_t)>{});
+
+	aux::vector<std::int64_t, file_index_t> restored;
+	fp.export_progress(restored);
+	TEST_EQUAL(restored[file_index_t{0}], before[file_index_t{0}]);
+	TEST_EQUAL(restored[file_index_t{1}], before[file_index_t{1}]);
+	TEST_EQUAL(restored[file_index_t{2}], before[file_index_t{2}]);
+	TEST_EQUAL(fp.total_on_disk(), 200);
+}
+'''
+          test.write_text(text)
+
+          # Expose a narrow torrent-level transition for a live missing
+          # part-file read. peer_connection can invoke this after disk I/O
+          # identifies the auxiliary backing data as gone.
+          replace_once(
+              "include/libtorrent/aux_/torrent.hpp",
+              "\t\tvoid handle_disk_error(string_view job_name\n"
+              "\t\t\t, storage_error const& error, peer_connection* c = nullptr\n"
+              "\t\t\t, disk_class rw = disk_class::none);\n",
+              "\t\t// A live read discovered that skipped-file backing for a piece\n"
+              "\t\t// disappeared. Demote the piece so its part-file ranges can be\n"
+              "\t\t// reconstructed without rewriting wanted-file bytes.\n"
+              "\t\tvoid partfile_read_failed(piece_index_t piece);\n"
+              "\n"
+              "\t\tvoid handle_disk_error(string_view job_name\n"
+              "\t\t\t, storage_error const& error, peer_connection* c = nullptr\n"
+              "\t\t\t, disk_class rw = disk_class::none);\n")
+
+          replace_once(
+              "src/torrent.cpp",
+              "\tvoid torrent::handle_disk_error(string_view job_name\n",
+              "\tvoid torrent::partfile_read_failed(piece_index_t const piece)\n"
+              "\t{\n"
+              "\t\tif (m_abort || !valid_metadata()\n"
+              "\t\t\t|| piece < piece_index_t{0}\n"
+              "\t\t\t|| piece >= m_torrent_file->end_piece())\n"
+              "\t\t\treturn;\n"
+              "\n"
+              "\t\tbool const was_finished = is_finished();\n"
+              "\n"
+              "\t\t// A missing piece is incompatible with optimistic seed mode. Keep\n"
+              "\t\t// m_have_all intact until need_picker() has materialized the full\n"
+              "\t\t// ownership map and file-progress accounting, then remove this one\n"
+              "\t\t// piece from both structures.\n"
+              "\t\tif (m_seed_mode) leave_seed_mode(seed_mode_t::skip_checking);\n"
+              "\t\tneed_picker();\n"
+              "\t\tif (!m_picker->have_piece(piece)) return;\n"
+              "\n"
+              "\t\tm_file_progress.lost_piece(m_torrent_file->layout(), piece);\n"
+              "\t\tm_picker->we_dont_have(piece);\n"
+              "\t\tset_have_all(false);\n"
+              "\t\tupdate_gauge();\n"
+              "\n"
+              "\t\tset_need_save_resume(torrent_handle::if_state_changed);\n"
+              "\t\tupdate_peer_interest(was_finished);\n"
+              "\t\tstate_updated();\n"
+              "\t\tupdate_want_peers();\n"
+              "\t}\n"
+              "\n"
+              "\tvoid torrent::handle_disk_error(string_view job_name\n")
+
+          # Mark recovery on an ordinary v1 part-file read failure too, not
+          # only during a v1 hash. This is what makes live deletion detectable.
+          replace_once(
+              "src/pread_storage.cpp",
+              "\t\t\t\tif (e)\n"
+              "\t\t\t\t{\n"
+              "\t\t\t\t\tif ((flags & disk_interface::v1_hash)\n"
+              "\t\t\t\t\t\t&& (e == boost::system::errc::no_such_file_or_directory\n"
+              "\t\t\t\t\t\t\t|| e == boost::asio::error::eof\n"
+              "\t\t\t\t\t\t\t|| e == lt::errors::file_too_short))\n"
+              "\t\t\t\t\t\tset_partfile_repair(piece, true);\n",
+              "\t\t\t\tif (e)\n"
+              "\t\t\t\t{\n"
+              "\t\t\t\t\tif (m_v1\n"
+              "\t\t\t\t\t\t&& (e == boost::system::errc::no_such_file_or_directory\n"
+              "\t\t\t\t\t\t\t|| e == boost::asio::error::eof\n"
+              "\t\t\t\t\t\t\t|| e == lt::errors::file_too_short))\n"
+              "\t\t\t\t\t\tset_partfile_repair(piece, true);\n")
+
+          # mmap is not the user's Default backend, but keep both backends'
+          # recovery semantics aligned.
+          replace_once(
+              "src/mmap_storage.cpp",
+              "\t\t\t, [this, mode, flags, &sett](file_index_t const file_index\n",
+              "\t\t\t, [this, piece, mode, flags, &sett](file_index_t const file_index\n")
+
+          old = (
+              "\t\t\t\tif (e)\n"
+              "\t\t\t\t{\n"
+              "\t\t\t\t\tec.ec = e;\n"
+              "\t\t\t\t\tec.operation = operation_t::partfile_read;\n"
+              "\t\t\t\t\treturn -1;\n"
+              "\t\t\t\t}\n")
+          new = (
+              "\t\t\t\tif (e)\n"
+              "\t\t\t\t{\n"
+              "\t\t\t\t\tif (m_v1\n"
+              "\t\t\t\t\t\t&& (e == boost::system::errc::no_such_file_or_directory\n"
+              "\t\t\t\t\t\t\t|| e == boost::asio::error::eof\n"
+              "\t\t\t\t\t\t\t|| e == lt::errors::file_too_short))\n"
+              "\t\t\t\t\t\tset_partfile_repair(piece, true);\n"
+              "\n"
+              "\t\t\t\t\tec.ec = e;\n"
+              "\t\t\t\t\tec.operation = operation_t::partfile_read;\n"
+              "\t\t\t\t\treturn -1;\n"
+              "\t\t\t\t}\n")
+          # Scope this replacement to mmap_storage::read(), because the same
+          # error block shape may exist elsewhere in the file.
+          p = Path("src/mmap_storage.cpp")
+          text = p.read_text()
+          start = text.index("\tint mmap_storage::read(")
+          end = text.index("\n\tint mmap_storage::write(", start)
+          section = text[start:end]
+          if section.count(old) != 1:
+              raise SystemExit(f"src/mmap_storage.cpp read(): expected one error block, found {section.count(old)}")
+          text = text[:start] + section.replace(old, new, 1) + text[end:]
+          p.write_text(text)
+
+          # Convert the first live missing-partfile upload failure into an
+          # internal piece demotion as well as the normal peer DONT_HAVE/reject.
+          replace_once(
+              "src/peer_connection.cpp",
+              "\t\t\twrite_dont_have(r.piece);\n"
+              "\t\t\twrite_reject_request(r);\n",
+              "\t\t\tbool const missing_partfile = error.operation == operation_t::partfile_read\n"
+              "\t\t\t\t&& (error.ec == boost::system::errc::no_such_file_or_directory\n"
+              "\t\t\t\t\t|| error.ec == boost::asio::error::eof\n"
+              "\t\t\t\t\t|| error.ec == errors::file_too_short);\n"
+              "\t\t\tif (missing_partfile)\n"
+              "\t\t\t\tt->partfile_read_failed(r.piece);\n"
+              "\n"
+              "\t\t\twrite_dont_have(r.piece);\n"
+              "\t\t\twrite_reject_request(r);\n")
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Commit source changes and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "marcmy"
+          git config user.email "21000174+marcmy@users.noreply.github.com"
+          git rm .github/workflows/live-partfile-recovery.yml
+          git add include/libtorrent/aux_/file_progress.hpp \
+                  include/libtorrent/aux_/torrent.hpp \
+                  src/file_progress.cpp \
+                  src/mmap_storage.cpp \
+                  src/peer_connection.cpp \
+                  src/pread_storage.cpp \
+                  src/torrent.cpp \
+                  test/test_file_progress.cpp
+          git commit -m "Recover from live part-file deletion"
+          git push origin HEAD:custom/qbittorrent-2.1
