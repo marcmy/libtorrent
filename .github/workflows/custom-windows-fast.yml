@@ -205,3 +205,24 @@ jobs:
           event-type: libtorrent-upstream-synced
           client-payload: >-
             {"libtorrent_sha":"${{ github.sha }}","libtorrent_changed":"true"}
+
+  dispatch-qbittorrent-pr:
+    name: Trigger qBittorrent PR validation
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.build.result == 'success' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch exact libtorrent PR revision
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-pr-build
+          client-payload: >-
+            {"libtorrent_sha":"${{ github.event.pull_request.head.sha }}","libtorrent_changed":"true"}
