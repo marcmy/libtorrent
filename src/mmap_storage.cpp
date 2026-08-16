@@ -818,7 +818,9 @@ mmap_storage::mmap_storage(storage_params const& params, aux::file_view_pool& po
 
 				if (e)
 				{
-					if (e == boost::system::errc::no_such_file_or_directory)
+					if (e == boost::system::errc::no_such_file_or_directory
+						|| e == boost::asio::error::eof
+						|| e == lt::errors::file_too_short)
 					{
 						missing_partfile = true;
 						set_partfile_repair(piece, true);

@@ -264,8 +264,10 @@ namespace libtorrent::aux {
 		// Part files reserve piece-sized slots but commonly contain only a
 		// small boundary range in each slot. Mark write-opened part files
 		// sparse so unwritten slot ranges do not consume physical disk space.
+#ifdef TORRENT_WINDOWS
 		if (file_mode & aux::open_mode::write)
 			file_mode |= aux::open_mode::sparse;
+#endif
 
 		try {
 			return {fn, 0, file_mode};
@@ -282,6 +284,7 @@ namespace libtorrent::aux {
 				if (ec) return {};
 				return {fn, 0, file_mode};
 			}
+			ec = e.ec;
 			return {};
 		}
 	}
