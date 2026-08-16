@@ -680,7 +680,7 @@ namespace libtorrent::aux {
 		std::vector<char> scratch_buffer;
 
 		return readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, mode, flags, &ph, &sett, &scratch_buffer](
+			, [this, piece, mode, flags, &ph, &sett, &scratch_buffer](
 				file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
