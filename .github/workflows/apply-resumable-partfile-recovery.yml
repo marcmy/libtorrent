@@ -24,97 +24,94 @@ jobs:
         run: |
           from pathlib import Path
 
-          def replace_once(path, old, new):
+          def patch_storage(path, cls):
               p = Path(path)
               s = p.read_text()
-              n = s.count(old)
-              if n != 1:
-                  raise SystemExit(f"{path}: expected one match, found {n}\n--- anchor ---\n{old}")
-              p.write_text(s.replace(old, new, 1))
+              start_marker = f"\tbool {cls}::verify_resume_data(add_torrent_params const& rd\n"
+              end_marker = "\n\tstd::pair<status_t, std::string> " + cls + "::move_storage"
+              start = s.find(start_marker)
+              if start < 0:
+                  raise SystemExit(f"{path}: verify_resume_data start not found")
+              end = s.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f"{path}: verify_resume_data end not found")
 
-          def patch_storage(path, cls):
-              old = f'''\tbool {cls}::verify_resume_data(add_torrent_params const& rd
-\t\t, aux::vector<std::string, file_index_t> const& links
-\t\t, storage_error& ec)
-\t{{
-\t\treturn aux::verify_resume_data(rd, links, names()
-\t\t\t, m_file_priority, m_stat_cache, m_save_path, ec);
-\t}}
-'''
-              new = f'''\tbool {cls}::verify_resume_data(add_torrent_params const& rd
-\t\t, aux::vector<std::string, file_index_t> const& links
-\t\t, storage_error& ec)
-\t{{
-\t\tbool const ret = aux::verify_resume_data(rd, links, names()
-\t\t\t, m_file_priority, m_stat_cache, m_save_path, ec);
-
-\t\tif (!ret || rd.have_pieces.empty()) return ret;
-
-\t\t// While checking, torrent::write_resume_data() deliberately saves only
-\t\t// the prefix that has actually been checked. A cleared bit in that
-\t\t// prefix therefore means "checked and missing", not "never checked".
-\t\t// Rebuild the transient part-file recovery classification here so an
-\t\t// interrupted check can resume without requiring another Force Recheck.
-\t\t//
-\t\t// A completed torrent may also have a full-size bitfield after the check
-\t\t// finished but before recovery started. completed_time lets us recover
-\t\t// that case without treating every ordinary incomplete torrent as a
-\t\t// part-file recovery candidate.
-\t\tbool const interrupted_check = rd.have_pieces.size() < files().num_pieces();
-\t\tif (!interrupted_check && rd.completed_time == 0) return ret;
-
-\t\tfilenames const fs = names();
-\t\tint const checked_pieces = std::min(rd.have_pieces.size(), files().num_pieces());
-\t\tfor (piece_index_t piece{{0}}; piece < piece_index_t(checked_pieces); ++piece)
-\t\t{{
-\t\t\tif (rd.have_pieces[piece]) continue;
-
-\t\t\tbool has_wanted = false;
-\t\t\tbool has_partfile = false;
-\t\t\tbool wanted_backing_complete = true;
-
-\t\t\tfor (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
-\t\t\t{{
-\t\t\t\tfile_index_t const file = slice.file_index;
-\t\t\t\tif (fs.pad_file_at(file)) continue;
-
-\t\t\t\tbool const skipped = file < m_file_priority.end_index()
-\t\t\t\t\t&& m_file_priority[file] == dont_download;
-\t\t\t\tif (skipped)
-\t\t\t\t{{
-\t\t\t\t\tif (use_partfile(file)) has_partfile = true;
-\t\t\t\t\tcontinue;
-\t\t\t\t}}
-
-\t\t\t\thas_wanted = true;
-\t\t\t\terror_code stat_error;
-\t\t\t\tauto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
-\t\t\t\tif (stat_error || actual_size < slice.offset + slice.size)
-\t\t\t\t{{
-\t\t\t\t\twanted_backing_complete = false;
-\t\t\t\t\tbreak;
-\t\t\t\t}}
-\t\t\t}}
-
-\t\t\t// Only protect a mixed wanted/.parts piece when the wanted backing
-\t\t\t// file is still physically complete. If a wanted file is genuinely
-\t\t\t// missing or short, normal repair must be allowed to create it.
-\t\t\t// If wanted bytes merely hash wrong, the protected backing-storage
-\t\t\t// verification will fail, clear recovery, and the next attempt becomes
-\t\t\t// an ordinary repair.
-\t\t\tif (has_wanted && has_partfile && wanted_backing_complete)
-\t\t\t\tset_partfile_repair(piece, true);
-\t\t}}
-
-\t\treturn ret;
-\t}}
-'''
-              replace_once(path, old, new)
+              lines = [
+                  f"\tbool {cls}::verify_resume_data(add_torrent_params const& rd",
+                  "\t\t, aux::vector<std::string, file_index_t> const& links",
+                  "\t\t, storage_error& ec)",
+                  "\t{",
+                  "\t\tbool const ret = aux::verify_resume_data(rd, links, names()",
+                  "\t\t\t, m_file_priority, m_stat_cache, m_save_path, ec);",
+                  "",
+                  "\t\tif (!ret || rd.have_pieces.empty()) return ret;",
+                  "",
+                  "\t\t// While checking, torrent::write_resume_data() deliberately saves only",
+                  "\t\t// the prefix that has actually been checked. A cleared bit in that",
+                  "\t\t// prefix therefore means \"checked and missing\", not \"never checked\".",
+                  "\t\t// Rebuild the transient part-file recovery classification here so an",
+                  "\t\t// interrupted check can resume without requiring another Force Recheck.",
+                  "\t\t//",
+                  "\t\t// A completed torrent may also have a full-size bitfield after the check",
+                  "\t\t// finished but before recovery started. completed_time lets us recover",
+                  "\t\t// that case without treating every ordinary incomplete torrent as a",
+                  "\t\t// part-file recovery candidate.",
+                  "\t\tbool const interrupted_check = rd.have_pieces.size() < files().num_pieces();",
+                  "\t\tif (!interrupted_check && rd.completed_time == 0) return ret;",
+                  "",
+                  "\t\tfilenames const fs = names();",
+                  "\t\tint const checked_pieces = std::min(rd.have_pieces.size(), files().num_pieces());",
+                  "\t\tfor (piece_index_t piece{0}; piece < piece_index_t(checked_pieces); ++piece)",
+                  "\t\t{",
+                  "\t\t\tif (rd.have_pieces[piece]) continue;",
+                  "",
+                  "\t\t\tbool has_wanted = false;",
+                  "\t\t\tbool has_partfile = false;",
+                  "\t\t\tbool wanted_backing_complete = true;",
+                  "",
+                  "\t\t\tfor (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))",
+                  "\t\t\t{",
+                  "\t\t\t\tfile_index_t const file = slice.file_index;",
+                  "\t\t\t\tif (fs.pad_file_at(file)) continue;",
+                  "",
+                  "\t\t\t\tbool const skipped = file < m_file_priority.end_index()",
+                  "\t\t\t\t\t&& m_file_priority[file] == dont_download;",
+                  "\t\t\t\tif (skipped)",
+                  "\t\t\t\t{",
+                  "\t\t\t\t\tif (use_partfile(file)) has_partfile = true;",
+                  "\t\t\t\t\tcontinue;",
+                  "\t\t\t\t}",
+                  "",
+                  "\t\t\t\thas_wanted = true;",
+                  "\t\t\t\terror_code stat_error;",
+                  "\t\t\t\tauto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);",
+                  "\t\t\t\tif (stat_error || actual_size < slice.offset + slice.size)",
+                  "\t\t\t\t{",
+                  "\t\t\t\t\twanted_backing_complete = false;",
+                  "\t\t\t\t\tbreak;",
+                  "\t\t\t\t}",
+                  "\t\t\t}",
+                  "",
+                  "\t\t\t// Only protect a mixed wanted/.parts piece when the wanted backing",
+                  "\t\t\t// file is still physically complete. If a wanted file is genuinely",
+                  "\t\t\t// missing or short, normal repair must be allowed to create it.",
+                  "\t\t\t// If wanted bytes merely hash wrong, the protected backing-storage",
+                  "\t\t\t// verification will fail, clear recovery, and the next attempt becomes",
+                  "\t\t\t// an ordinary repair.",
+                  "\t\t\tif (has_wanted && has_partfile && wanted_backing_complete)",
+                  "\t\t\t\tset_partfile_repair(piece, true);",
+                  "\t\t}",
+                  "",
+                  "\t\treturn ret;",
+                  "\t}",
+                  "",
+              ]
+              replacement = "\n".join(lines)
+              p.write_text(s[:start] + replacement + s[end:])
 
           patch_storage("src/pread_storage.cpp", "pread_storage")
           patch_storage("src/mmap_storage.cpp", "mmap_storage")
 
-          # This workflow is one-shot; keep the source branch clean.
           Path(".github/workflows/apply-resumable-partfile-recovery.yml").unlink()
 
       - name: Show patch
