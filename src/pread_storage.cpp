@@ -556,7 +556,7 @@ namespace libtorrent::aux {
 
 				if (e)
 				{
-					if ((flags & disk_interface::v1_hash)
+					if (m_v1
 						&& (e == boost::system::errc::no_such_file_or_directory
 							|| e == boost::asio::error::eof
 							|| e == lt::errors::file_too_short))

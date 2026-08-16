@@ -1140,6 +1140,32 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		}
 	}
 
+	void torrent::partfile_read_failed(piece_index_t const piece)
+	{
+		if (m_abort || !valid_metadata()
+			|| piece < piece_index_t{0}
+			|| piece >= m_torrent_file->end_piece())
+			return;
+
+		bool const was_finished = is_finished();
+
+		// Materialize the full ownership map before dropping m_have_all,
+		// then remove this piece from picker and file-progress together.
+		if (m_seed_mode) leave_seed_mode(seed_mode_t::skip_checking);
+		need_picker();
+		if (!m_picker->have_piece(piece)) return;
+
+		m_file_progress.lost_piece(m_torrent_file->layout(), piece);
+		m_picker->we_dont_have(piece);
+		set_have_all(false);
+		update_gauge();
+
+		set_need_save_resume(torrent_handle::if_download_progress);
+		update_peer_interest(was_finished);
+		state_updated();
+		update_want_peers();
+	}
+
 	void torrent::handle_disk_error(string_view job_name
 		, storage_error const& error
 		, peer_connection* c

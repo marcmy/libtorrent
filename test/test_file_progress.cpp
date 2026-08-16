@@ -154,3 +154,48 @@ TORRENT_TEST(pad_file_completion_callback)
 
 	TEST_EQUAL(count, 2);
 }
+
+
+TORRENT_TEST(lost_piece)
+{
+	int const piece_size = 256;
+
+	file_storage fs;
+	fs.add_file("torrent/1", 200);
+	fs.add_file("torrent/2", 100, file_storage::flag_pad_file);
+	fs.add_file("torrent/3", 300);
+	fs.set_piece_length(piece_size);
+	fs.set_num_pieces(aux::calc_num_pieces(fs));
+
+	piece_index_t const piece{0};
+	aux::piece_picker picker(fs.total_size(), fs.piece_length());
+	picker.piece_flushed(piece);
+
+	aux::file_progress fp;
+	fp.init(picker, fs);
+
+	aux::vector<std::int64_t, file_index_t> before;
+	fp.export_progress(before);
+	TEST_EQUAL(before[file_index_t{0}], 200);
+	TEST_EQUAL(before[file_index_t{1}], 56);
+	TEST_EQUAL(before[file_index_t{2}], 0);
+	TEST_EQUAL(fp.total_on_disk(), 200);
+
+	fp.lost_piece(fs, piece);
+
+	aux::vector<std::int64_t, file_index_t> lost;
+	fp.export_progress(lost);
+	TEST_EQUAL(lost[file_index_t{0}], 0);
+	TEST_EQUAL(lost[file_index_t{1}], 0);
+	TEST_EQUAL(lost[file_index_t{2}], 0);
+	TEST_EQUAL(fp.total_on_disk(), 0);
+
+	fp.update(fs, piece, std::function<void(file_index_t)>{});
+
+	aux::vector<std::int64_t, file_index_t> restored;
+	fp.export_progress(restored);
+	TEST_EQUAL(restored[file_index_t{0}], before[file_index_t{0}]);
+	TEST_EQUAL(restored[file_index_t{1}], before[file_index_t{1}]);
+	TEST_EQUAL(restored[file_index_t{2}], before[file_index_t{2}]);
+	TEST_EQUAL(fp.total_on_disk(), 200);
+}

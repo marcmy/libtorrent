@@ -577,6 +577,11 @@ namespace libtorrent::aux {
 		void handle_exception();
 
 		enum class disk_class { none, write };
+		// A live read discovered that skipped-file backing for a piece
+		// disappeared. Demote the piece so its part-file ranges can be
+		// reconstructed without rewriting wanted-file bytes.
+		void partfile_read_failed(piece_index_t piece);
+
 		void handle_disk_error(string_view job_name
 			, storage_error const& error, peer_connection* c = nullptr
 			, disk_class rw = disk_class::none);

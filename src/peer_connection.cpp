@@ -5617,6 +5617,13 @@ namespace {
 				return;
 			}
 
+			bool const missing_partfile = error.operation == operation_t::partfile_read
+				&& (error.ec == boost::system::errc::no_such_file_or_directory
+					|| error.ec == boost::asio::error::eof
+					|| error.ec == errors::file_too_short);
+			if (missing_partfile)
+				t->partfile_read_failed(r.piece);
+
 			write_dont_have(r.piece);
 			write_reject_request(r);
 			if (t->alerts().should_post<file_error_alert>())
