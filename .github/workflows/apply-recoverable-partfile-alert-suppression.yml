@@ -1,3 +1,4 @@
+# One-shot source patch; workflow-only changes are ignored by the normal Windows build.
 name: Apply recoverable part-file alert suppression
 
 on:
