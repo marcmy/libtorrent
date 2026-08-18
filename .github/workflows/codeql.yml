@@ -1,0 +1,14 @@
+name: "CodeQL"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    name: Temporary registration placeholder
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Temporary placeholder used only to register this upstream workflow so it can be disabled in Actions."
