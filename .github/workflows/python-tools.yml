@@ -1,9 +1,9 @@
-name: Python tools (manual)
-
-permissions: read-all
+name: Python tools
 
 on:
-   workflow_dispatch:
+   push:
+      branches: [ RC_2_1, master ]
+   pull_request:
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
@@ -16,12 +16,12 @@ jobs:
       runs-on: ubuntu-24.04
 
       steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
            fetch-depth: 1
            filter: tree:0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
            python-version: "3.12"
 

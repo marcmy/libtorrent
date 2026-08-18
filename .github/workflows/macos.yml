@@ -1,9 +1,13 @@
-name: MacOS (disabled)
-
-permissions: read-all
+name: MacOS
 
 on:
-   workflow_dispatch:
+   push:
+      branches: [ RC_2_1, master ]
+      paths-ignore:
+         - bindings/python/**
+   pull_request:
+      paths-ignore:
+         - bindings/python/**
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
@@ -27,7 +31,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: recursive
            fetch-depth: 1
@@ -63,7 +67,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: true
            fetch-depth: 1
@@ -96,7 +100,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: true
            fetch-depth: 1
@@ -124,7 +128,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: recursive
            fetch-depth: 1
@@ -163,7 +167,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: true
            fetch-depth: 1

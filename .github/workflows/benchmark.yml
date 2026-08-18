@@ -1,7 +1,9 @@
-name: Benchmark (manual)
+name: Benchmark
 
 on:
-   workflow_dispatch:
+   push:
+      branches: [ RC_2_1, master ]
+   pull_request:
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
@@ -9,20 +11,18 @@ concurrency:
 
 jobs:
 
-   # Tracks benchmark history for the base branches themselves. Forks without
-   # Bencher credentials still build the benchmark tools but skip reporting.
+   # tracks benchmark history for the base branches themselves.
    tools:
       name: tools
+      if: github.event_name == 'push'
       runs-on: ubuntu-24.04
       permissions:
          contents: read
          checks: write
-      env:
-         BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: recursive
            fetch-depth: 1
@@ -50,24 +50,85 @@ jobs:
           cd tools
           b2 release warnings-as-errors=on stage
 
-      - uses: bencherdev/bencher@v0.6.11
-
-      - name: Skip benchmark tracking when unconfigured
-        if: env.BENCHER_API_KEY == ''
-        run: echo "::notice::BENCHER_API_KEY is not configured; skipping Bencher reporting."
+      - uses: bencherdev/bencher@v0.6.8
 
       - name: track benchmarks
-        if: env.BENCHER_API_KEY != ''
-        env:
-          GITHUB_ACTIONS_TOKEN: ${{ github.token }}
         run: |
           cd tools
           bencher run \
             --project libtorrent \
-            --key "$BENCHER_API_KEY" \
+            --key '${{ secrets.BENCHER_API_KEY }}' \
             --branch '${{ github.ref_name }}' \
             --testbed ubuntu-24.04 \
+            --threshold-measure latency \
+            --threshold-test t_test \
+            --threshold-max-sample-size 64 \
+            --threshold-upper-boundary 0.99 \
+            --thresholds-reset \
             --adapter json \
             --error-on-alert \
-            --github-actions "$GITHUB_ACTIONS_TOKEN" \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            ./bencher
+
+   # compares PR benchmark results against their target branch. Skipped for
+   # forked PRs, since they don't have access to the secrets below. Never
+   # fails the PR: alerts are surfaced via the GitHub check/PR comment (see
+   # --github-actions) but --error-on-alert is intentionally omitted.
+   tools-pr:
+      name: tools (PR)
+      if: >
+         github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository
+      runs-on: ubuntu-24.04
+      permissions:
+         contents: read
+         checks: write
+         pull-requests: write
+
+      steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+           submodules: recursive
+           fetch-depth: 1
+           filter: tree:0
+
+      - name: update package lists
+        continue-on-error: true
+        run: |
+          sudo apt update
+
+      - uses: Chocobo1/setup-ccache-action@v1
+        with:
+          update_packager_index: false
+          override_cache_key: ccache-linux-benchmark-tools-${{ github.base_ref || github.ref_name }}
+          ccache_options: |
+            max_size=500M
+
+      - name: install boost
+        run: |
+          sudo apt install libboost-tools-dev libboost-dev libboost-system-dev
+          echo "using gcc ;" >>~/user-config.jam
+
+      - name: build benchmark tools
+        run: |
+          cd tools
+          b2 release warnings-as-errors=on stage
+
+      - uses: bencherdev/bencher@v0.6.8
+
+      - name: track benchmarks
+        run: |
+          cd tools
+          bencher run \
+            --project libtorrent \
+            --key '${{ secrets.BENCHER_API_KEY }}' \
+            --branch '${{ github.head_ref }}' \
+            --start-point '${{ github.base_ref }}' \
+            --start-point-hash '${{ github.event.pull_request.base.sha }}' \
+            --start-point-clone-thresholds \
+            --start-point-reset \
+            --testbed ubuntu-24.04 \
+            --adapter json \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
             ./bencher

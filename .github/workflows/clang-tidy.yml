@@ -1,9 +1,9 @@
-name: clang-tidy (manual)
-
-permissions: read-all
+name: clang-tidy
 
 on:
-   workflow_dispatch:
+   push:
+      branches: [ RC_2_1, master ]
+   pull_request:
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
@@ -17,7 +17,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            submodules: recursive
            fetch-depth: 1
@@ -31,7 +31,7 @@ jobs:
       - uses: Chocobo1/setup-ccache-action@v1
         with:
           update_packager_index: false
-          override_cache_key: ccache-linux-clang-tidy-${{ github.ref_name }}
+          override_cache_key: ccache-linux-clang-tidy-${{ github.base_ref }}
           ccache_options: |
             max_size=500M
 
@@ -46,3 +46,6 @@ jobs:
       - name: analyze
         run: |
           b2 -a clang_tidy webtorrent=on
+
+
+

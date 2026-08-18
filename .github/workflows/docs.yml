@@ -1,9 +1,9 @@
-name: Documentation (manual)
-
-permissions: read-all
+name: Documentation
 
 on:
-   workflow_dispatch:
+   push:
+      branches: [ RC_2_1, master ]
+   pull_request:
 
 concurrency:
    group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
@@ -17,7 +17,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
            fetch-depth: 1
            filter: tree:0
