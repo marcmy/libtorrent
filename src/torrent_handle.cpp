@@ -376,6 +376,100 @@ namespace libtorrent {
 		async_call(&aux::torrent::force_recheck);
 	}
 
+	void torrent_handle::recheck_files(std::vector<file_index_t> files) const
+	{
+		async_call(&aux::torrent::recheck_files, std::move(files));
+	}
+
+	void aux::torrent::recheck_files(std::vector<file_index_t> files)
+	{
+		TORRENT_ASSERT(is_single_thread());
+
+		if (m_abort || m_deleted || !valid_metadata() || !m_storage)
+			return;
+
+		if (state() == torrent_status::checking_files
+			|| state() == torrent_status::checking_resume_data)
+			return;
+
+		std::vector<piece_index_t> pieces;
+		file_storage const& fs = torrent_file().layout();
+		for (file_index_t const file : files)
+		{
+			if (file < file_index_t{0} || file >= fs.end_file()) continue;
+			if (fs.pad_file_at(file) || fs.file_size(file) == 0) continue;
+
+			piece_index_t const first = torrent_file().map_file(file, 0, 1).piece;
+			piece_index_t const last = torrent_file().map_file(
+				file, fs.file_size(file) - 1, 1).piece;
+
+			for (piece_index_t p = first; p <= last; ++p)
+				if (have_piece(p)) pieces.push_back(p);
+		}
+
+		std::sort(pieces.begin(), pieces.end());
+		pieces.erase(std::unique(pieces.begin(), pieces.end()), pieces.end());
+		if (pieces.empty()) return;
+
+		disk_job_flags_t flags = disk_interface::sequential_access
+			| disk_interface::volatile_read | disk_interface::flush_piece;
+		if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
+			flags |= disk_interface::v1_hash;
+
+		std::uint8_t const gen = m_picker_generation;
+		for (piece_index_t const piece : pieces)
+		{
+			aux::vector<sha256_hash> hashes;
+			if (torrent_file().info_hashes().has_v2())
+				hashes.resize(torrent_file().layout().blocks_in_piece2(piece));
+
+			span<sha256_hash> v2_span(hashes);
+			m_ses.disk_thread().async_hash(m_storage, piece, v2_span, flags,
+				[self = shared_from_this(), hashes1 = std::move(hashes), gen](
+					piece_index_t const p, sha1_hash const& h,
+					storage_error const& error) mutable
+				{
+					if (self->m_abort || self->m_deleted
+						|| gen != self->m_picker_generation)
+						return;
+
+					if (error)
+					{
+						if (error.ec == boost::system::errc::no_such_file_or_directory
+							|| error.ec == boost::asio::error::eof
+							|| error.ec == lt::errors::file_too_short)
+							self->partfile_read_failed(p);
+						else
+							self->handle_disk_error("selective_recheck", error);
+						return;
+					}
+
+					if (self->settings().get_bool(settings_pack::disable_hash_checks))
+						return;
+
+					boost::tribool v1_passed = boost::indeterminate;
+					boost::tribool v2_passed = boost::indeterminate;
+					if (self->torrent_file().info_hashes().has_v1()
+						&& !self->m_disable_v1_hashes)
+						v1_passed = h == self->torrent_file().hash_for_piece(p);
+
+					if (self->torrent_file().info_hashes().has_v2()
+						&& !bool(v1_passed == false))
+						v2_passed = self->on_blocks_hashed(p, hashes1);
+
+					if ((v1_passed && !v2_passed) || (!v1_passed && v2_passed))
+					{
+						self->handle_inconsistent_hashes(p);
+						return;
+					}
+
+					if (bool(v1_passed == false) || bool(v2_passed == false))
+						self->partfile_read_failed(p);
+				});
+		}
+		m_ses.deferred_submit_jobs();
+	}
+
 	void torrent_handle::resume() const
 	{
 		async_call(&aux::torrent::resume);

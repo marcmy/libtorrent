@@ -1374,11 +1374,9 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 
 		INVARIANT_CHECK;
 
-		// if we have all pieces we should not have a picker
-		// unless we're in suggest mode
-		TORRENT_ASSERT(!m_have_all
-			|| settings().get_int(settings_pack::suggest_mode)
-			== settings_pack::suggest_read_cache);
+		// m_have_all may be materialized into a picker temporarily when a
+		// previously-owned piece must be invalidated (e.g. selective recheck).
+		// pp->we_have_all() below preserves every unrelated piece.
 
 		auto pp = std::make_unique<piece_picker>(m_torrent_file->total_size()
 			, m_torrent_file->piece_length());
