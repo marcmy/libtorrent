@@ -699,9 +699,10 @@ namespace aux {
 		// will be the highest of all torrents in the session.
 		void force_recheck() const;
 
-		// Re-hash only pieces overlapping the specified files. Pieces that are
-		// currently missing are skipped. Pieces that pass remain untouched while
-		// pieces that fail are marked missing and become eligible for download.
+		// Re-hash only pieces overlapping the specified files. Owned pieces that
+		// fail are marked missing and become eligible for download. Missing pieces
+		// that pass are restored as owned, allowing externally restored files to
+		// be recovered without a full-torrent recheck.
 		// Unlike force_recheck(), this does not reset unrelated piece state,
 		// disconnect peers, or put the torrent into the global checking queue.
 		// Boundary pieces may read bytes belonging to adjacent files because

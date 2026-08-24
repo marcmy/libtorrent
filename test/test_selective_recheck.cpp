@@ -9,7 +9,9 @@ see LICENSE file.
 
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <thread>
+#include <vector>
 
 #include "libtorrent/aux_/path.hpp"
 #include "libtorrent/alert_types.hpp"
@@ -40,6 +42,12 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	auto p = ::create_torrent(&file, "temporary", 16 * 1024, 4, false
 		, create_torrent::v1_only);
 	file.close();
+
+	std::ifstream input(file_path.c_str(), std::ios::binary);
+	std::vector<char> const original_data{
+		std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+	TEST_CHECK(!original_data.empty());
+	input.close();
 
 	settings_pack pack = settings();
 	pack.set_str(settings_pack::listen_interfaces, test_listen_interface());
@@ -90,6 +98,29 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	}
 
 	TEST_CHECK(invalidated);
+	TEST_CHECK(h.is_valid());
+
+	// Put the exact bytes back and verify that selective recheck can promote
+	// the missing piece again without requiring a full force_recheck().
+	std::ofstream restored(file_path.c_str(), std::ios::binary);
+	TEST_CHECK(restored.good());
+	restored.write(original_data.data(), static_cast<std::streamsize>(original_data.size()));
+	restored.close();
+
+	h.recheck_files({0_file});
+
+	bool repromoted = false;
+	for (int i = 0; i < 100; ++i)
+	{
+		if (h.have_piece(0_piece))
+		{
+			repromoted = true;
+			break;
+		}
+		std::this_thread::sleep_for(50ms);
+	}
+
+	TEST_CHECK(repromoted);
 	TEST_CHECK(h.is_valid());
 
 	remove_all(dir, ec);

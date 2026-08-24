@@ -404,7 +404,7 @@ namespace libtorrent {
 				file, fs.file_size(file) - 1, 1).piece;
 
 			for (piece_index_t p = first; p <= last; ++p)
-				if (have_piece(p)) pieces.push_back(p);
+				pieces.push_back(p);
 		}
 
 		std::sort(pieces.begin(), pieces.end());
@@ -420,21 +420,42 @@ namespace libtorrent {
 		// valid after a file is moved or replaced externally, notably on Windows.
 		m_ses.disk_thread().async_release_files(m_storage);
 
-		std::uint8_t const gen = m_picker_generation;
-		for (piece_index_t const piece : pieces)
+		struct recheck_state
 		{
+			std::vector<piece_index_t> pieces;
+			std::size_t next_piece;
+			disk_job_flags_t flags;
+			std::uint8_t generation;
+		};
+
+		auto const state = std::make_shared<recheck_state>(recheck_state{
+			std::move(pieces), 0, flags, m_picker_generation});
+		auto const schedule = std::make_shared<std::function<void()>>();
+		std::weak_ptr<std::function<void()>> const weak_schedule = schedule;
+
+		*schedule = [self = shared_from_this(), state, weak_schedule]
+		{
+			if (self->m_abort || self->m_deleted
+				|| state->generation != self->m_picker_generation
+				|| state->next_piece >= state->pieces.size())
+				return;
+
+			piece_index_t const piece = state->pieces[state->next_piece++];
 			aux::vector<sha256_hash> hashes;
-			if (torrent_file().info_hashes().has_v2())
-				hashes.resize(torrent_file().layout().blocks_in_piece2(piece));
+			if (self->torrent_file().info_hashes().has_v2())
+				hashes.resize(self->torrent_file().layout().blocks_in_piece2(piece));
+
+			auto const keep_alive = weak_schedule.lock();
+			if (!keep_alive) return;
 
 			span<sha256_hash> v2_span(hashes);
-			m_ses.disk_thread().async_hash(m_storage, piece, v2_span, flags,
-				[self = shared_from_this(), hashes1 = std::move(hashes), gen](
+			self->m_ses.disk_thread().async_hash(self->m_storage, piece, v2_span, state->flags,
+				[self, state, keep_alive, hashes1 = std::move(hashes)](
 					piece_index_t const p, sha1_hash const& h,
 					storage_error const& error) mutable
 				{
 					if (self->m_abort || self->m_deleted
-						|| gen != self->m_picker_generation)
+						|| state->generation != self->m_picker_generation)
 						return;
 
 					if (error)
@@ -449,11 +470,16 @@ namespace libtorrent {
 							self->partfile_read_failed(p);
 						else
 							self->handle_disk_error("selective_recheck", error);
+
+						(*keep_alive)();
 						return;
 					}
 
 					if (self->settings().get_bool(settings_pack::disable_hash_checks))
+					{
+						(*keep_alive)();
 						return;
+					}
 
 					boost::tribool v1_passed = boost::indeterminate;
 					boost::tribool v2_passed = boost::indeterminate;
@@ -472,10 +498,40 @@ namespace libtorrent {
 					}
 
 					if (bool(v1_passed == false) || bool(v2_passed == false))
+					{
 						self->partfile_read_failed(p);
+					}
+					else if ((bool(v1_passed == true) || bool(v2_passed == true))
+						&& !self->have_piece(p))
+					{
+						bool const was_finished = self->is_finished();
+						self->need_picker();
+						if (!self->m_picker->have_piece(p))
+						{
+#if TORRENT_USE_INVARIANT_CHECKS
+							TORRENT_ASSERT(!self->m_file_progress.have_piece(p));
+#endif
+							// This piece already exists on disk and just passed its hash.
+							// piece_flushed() is the supported open -> owned transition.
+							self->m_picker->piece_flushed(p);
+							self->update_gauge();
+							self->we_have(p);
+							self->update_peer_interest(was_finished);
+							self->update_want_peers();
+						}
+					}
+
+					(*keep_alive)();
 				});
-		}
-		m_ses.deferred_submit_jobs();
+			self->m_ses.deferred_submit_jobs();
+		};
+
+		// Keep selective checks bounded. Large file/folder selections should not
+		// enqueue every piece hash (and its v2 hash buffer) simultaneously.
+		constexpr std::size_t max_in_flight = 4;
+		std::size_t const initial = std::min(max_in_flight, state->pieces.size());
+		for (std::size_t i = 0; i < initial; ++i)
+			(*schedule)();
 	}
 
 	void torrent_handle::resume() const
