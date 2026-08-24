@@ -12,6 +12,7 @@ see LICENSE file.
 #include <thread>
 
 #include "libtorrent/aux_/path.hpp"
+#include "libtorrent/alert_types.hpp"
 #include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
 #include "libtorrent/torrent_flags.hpp"
@@ -50,13 +51,27 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	lt::session ses(pack);
 
 	p.save_path = dir;
-	p.flags &= ~torrent_flags::paused;
+	// Match qBittorrent's manual test: the completed torrent is paused.
+	p.flags |= torrent_flags::paused;
 	p.flags &= ~torrent_flags::auto_managed;
 	p.flags |= torrent_flags::seed_mode;
 	torrent_handle h = ses.add_torrent(std::move(p), ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(h.is_valid());
 	TEST_CHECK(h.have_piece(0_piece));
+
+	// Force the backing file to be opened first. On Windows an already-open
+	// handle can remain readable after the path is moved/deleted, which used to
+	// let selective recheck hash stale storage and incorrectly keep the piece.
+	h.read_piece(0_piece);
+	alert const* const a = wait_for_alert(ses, read_piece_alert::alert_type, "ses");
+	TEST_CHECK(a);
+	if (a)
+	{
+		read_piece_alert const* const rp = alert_cast<read_piece_alert>(a);
+		TEST_CHECK(rp);
+		if (rp) TEST_CHECK(!rp->error);
+	}
 
 	remove(file_path, ec);
 	TEST_CHECK(!ec);

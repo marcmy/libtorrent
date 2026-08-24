@@ -416,6 +416,10 @@ namespace libtorrent {
 		if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
 			flags |= disk_interface::v1_hash;
 
+		// Reopen files by path before hashing. Cached file handles may remain
+		// valid after a file is moved or replaced externally, notably on Windows.
+		m_ses.disk_thread().async_release_files(m_storage);
+
 		std::uint8_t const gen = m_picker_generation;
 		for (piece_index_t const piece : pieces)
 		{
