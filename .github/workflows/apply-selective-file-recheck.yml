@@ -7,6 +7,9 @@ on:
     paths:
       - .github/selective-file-recheck.patch
       - .github/workflows/apply-selective-file-recheck.yml
+  pull_request:
+    branches:
+      - custom/qbittorrent-2.1
 
 permissions:
   contents: write
