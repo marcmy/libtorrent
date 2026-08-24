@@ -699,6 +699,15 @@ namespace aux {
 		// will be the highest of all torrents in the session.
 		void force_recheck() const;
 
+		// Re-hash only pieces overlapping the specified files. Pieces that are
+		// currently missing are skipped. Pieces that pass remain untouched while
+		// pieces that fail are marked missing and become eligible for download.
+		// Unlike force_recheck(), this does not reset unrelated piece state,
+		// disconnect peers, or put the torrent into the global checking queue.
+		// Boundary pieces may read bytes belonging to adjacent files because
+		// BitTorrent hashes are piece-based.
+		void recheck_files(std::vector<file_index_t> files) const;
+
 		// the disk cache will be flushed before creating the resume data.
 		// This avoids a problem with file timestamps in the resume data in
 		// case the cache hasn't been flushed yet.

@@ -463,6 +463,7 @@ namespace libtorrent::aux {
 			storage_error const& error,
 			std::uint8_t picker_gen);
 		void files_checked();
+		void recheck_files(std::vector<file_index_t> files);
 		void start_checking();
 
 		void start_announcing();
