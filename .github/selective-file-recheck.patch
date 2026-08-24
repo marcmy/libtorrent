@@ -1,2 +1,2 @@
 # Selective file recheck staging marker.
-# Source edits are applied by .github/workflows/apply-selective-file-recheck.yml using exact-match replacements.
+# Source edits are applied by the temporary base-branch staging helper.
