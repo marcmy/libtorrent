@@ -571,10 +571,8 @@ target_include_directories(torrent-rasterbar PUBLIC
 target_compile_definitions(torrent-rasterbar
 	PUBLIC
 		$<$<CONFIG:Debug>:TORRENT_USE_ASSERTS>
-		BOOST_ASIO_ENABLE_CANCELIO
 		BOOST_ASIO_NO_DEPRECATED
 		BOOST_SYSTEM_USE_UTF8
-		_SILENCE_CXX17_ALLOCATOR_VOID_DEPRECATION_WARNING
 	PRIVATE
 		TORRENT_BUILDING_LIBRARY
 		BOOST_EXCEPTION_DISABLE
@@ -652,7 +650,9 @@ if (WIN32)
 	add_definitions(-D_WIN32_WINNT=0x0A00) # target Windows 10 or later
 
 	target_compile_definitions(torrent-rasterbar
-		PUBLIC WIN32_LEAN_AND_MEAN # prevent winsock1 to be included
+		PUBLIC
+			BOOST_ASIO_ENABLE_CANCELIO
+			WIN32_LEAN_AND_MEAN # prevent winsock1 to be included
 	)
 
 	if (MSVC)
@@ -660,6 +660,7 @@ if (WIN32)
 			PUBLIC
 				BOOST_ALL_NO_LIB
 				_SCL_SECURE_NO_DEPRECATE _CRT_SECURE_NO_DEPRECATE # disable bogus deprecation warnings on msvc8
+				_SILENCE_CXX17_ALLOCATOR_VOID_DEPRECATION_WARNING
 		)
 		target_compile_options(torrent-rasterbar
 			PRIVATE
