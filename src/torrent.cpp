@@ -1158,6 +1158,15 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		m_file_progress.lost_piece(m_torrent_file->layout(), piece);
 		m_picker->we_dont_have(piece);
 		set_have_all(false);
+
+		// m_state == seeding makes is_seed() true by itself. Once an owned
+		// piece is invalidated, leave that state before the normal finished ->
+		// downloading transition logic runs.
+		if (m_state == torrent_status::seeding)
+			set_state(m_picker->is_finished()
+				? torrent_status::finished
+				: torrent_status::downloading);
+
 		update_gauge();
 
 		set_need_save_resume(torrent_handle::if_download_progress);
