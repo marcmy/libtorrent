@@ -3,12 +3,7 @@ name: Apply selective file recheck edits
 on:
   push:
     branches:
-      - feature/selective-file-recheck
-    paths:
-      - .github/workflows/apply-selective-file-recheck.yml
-  pull_request:
-    branches:
-      - custom/qbittorrent-2.1
+      - feature/selective-file-recheck-stage2
 
 permissions:
   contents: write
@@ -19,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feature/selective-file-recheck
+          ref: feature/selective-file-recheck-stage2
           fetch-depth: 0
       - name: Apply exact source edits
         shell: python
@@ -174,4 +169,4 @@ jobs:
           git add include/libtorrent/torrent_handle.hpp include/libtorrent/aux_/torrent.hpp src/torrent_handle.cpp src/torrent.cpp
           git diff --cached --check
           git commit -m "feat: add selective file recheck [skip ci]"
-          git push origin HEAD:feature/selective-file-recheck
+          git push origin HEAD:feature/selective-file-recheck-stage2
