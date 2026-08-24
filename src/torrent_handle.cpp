@@ -416,6 +416,38 @@ namespace libtorrent {
 		if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
 			flags |= disk_interface::v1_hash;
 
+		auto const invalidate_piece = [](std::shared_ptr<aux::torrent> const& self
+			, piece_index_t const p)
+		{
+			if (self->m_abort || !self->valid_metadata()
+				|| p < piece_index_t{0}
+				|| p >= self->m_torrent_file->end_piece())
+				return;
+
+			bool const was_finished = self->is_finished();
+
+			if (self->m_seed_mode)
+				self->leave_seed_mode(seed_mode_t::skip_checking);
+			self->need_picker();
+			if (!self->m_picker->have_piece(p)) return;
+
+			self->m_file_progress.lost_piece(self->m_torrent_file->layout(), p);
+			self->m_picker->we_dont_have(p);
+			self->set_have_all(false);
+
+			// is_seed() also considers m_state == seeding. Once the picker says
+			// this piece is missing, leave that stale state before any gauge,
+			// status, or peer-interest bookkeeping observes the torrent.
+			if (self->state() == torrent_status::seeding)
+				self->set_state(torrent_status::downloading);
+
+			self->update_gauge();
+			self->set_need_save_resume(torrent_handle::if_download_progress);
+			self->update_peer_interest(was_finished);
+			self->state_updated();
+			self->update_want_peers();
+		};
+
 		std::uint8_t const gen = m_picker_generation;
 		for (piece_index_t const piece : pieces)
 		{
@@ -425,7 +457,7 @@ namespace libtorrent {
 
 			span<sha256_hash> v2_span(hashes);
 			m_ses.disk_thread().async_hash(m_storage, piece, v2_span, flags,
-				[self = shared_from_this(), hashes1 = std::move(hashes), gen](
+				[self = shared_from_this(), hashes1 = std::move(hashes), gen, invalidate_piece](
 					piece_index_t const p, sha1_hash const& h,
 					storage_error const& error) mutable
 				{
@@ -438,7 +470,7 @@ namespace libtorrent {
 						if (error.ec == boost::system::errc::no_such_file_or_directory
 							|| error.ec == boost::asio::error::eof
 							|| error.ec == lt::errors::file_too_short)
-							self->partfile_read_failed(p);
+							invalidate_piece(self, p);
 						else
 							self->handle_disk_error("selective_recheck", error);
 						return;
@@ -464,7 +496,7 @@ namespace libtorrent {
 					}
 
 					if (bool(v1_passed == false) || bool(v2_passed == false))
-						self->partfile_read_failed(p);
+						invalidate_piece(self, p);
 				});
 		}
 		m_ses.deferred_submit_jobs();
