@@ -4,7 +4,7 @@ on:
   pull_request_target:
     branches:
       - custom/qbittorrent-2.1
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   contents: write
