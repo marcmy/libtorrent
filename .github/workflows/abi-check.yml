@@ -44,7 +44,7 @@ jobs:
 
       - name: checkout baseline (${{ steps.config.outputs.baseline }})
         if: steps.config.outputs.baseline != '' && steps.cache-baseline.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            ref: ${{ steps.config.outputs.baseline }}
            path: baseline
@@ -53,7 +53,7 @@ jobs:
            submodules: true
 
       - name: checkout PR
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            path: pr
            fetch-depth: 1
