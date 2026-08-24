@@ -1,0 +1,35 @@
+name: Selective recheck comment command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.issue.pull_request && github.event.issue.number == 31 && github.event.comment.body == '/apply-selective-recheck'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: custom/qbittorrent-2.1
+          path: controller
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/selective-file-recheck
+          path: target
+          fetch-depth: 0
+      - name: Apply selective recheck source edits
+        run: python controller/.github/scripts/apply-selective-recheck.py target
+      - name: Commit source changes
+        working-directory: target
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add include/libtorrent/torrent_handle.hpp include/libtorrent/aux_/torrent.hpp src/torrent_handle.cpp src/torrent.cpp
+          git diff --cached --check
+          git commit -m "feat: add selective file recheck"
+          git push origin HEAD:feature/selective-file-recheck
