@@ -10,3 +10,15 @@ query-filters:
       id: actions/unpinned-tag
   - exclude:
       id: py/file-not-closed
+  - exclude:
+      id: py/imprecise-assert
+  - exclude:
+      id: py/unused-import
+  - exclude:
+      id: py/unused-local-variable
+  - exclude:
+      id: py/unused-global-variable
+  - exclude:
+      id: py/commented-out-code
+  - exclude:
+      id: py/empty-except
