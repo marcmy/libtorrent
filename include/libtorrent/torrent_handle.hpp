@@ -22,6 +22,8 @@ see LICENSE file.
 
 #include "libtorrent/config.hpp"
 
+#define TORRENT_HAS_RECHECK_FILES_PROGRESS_CALLBACK 1
+
 #include <vector>
 #include <set>
 #include <functional>
@@ -240,6 +242,8 @@ namespace aux {
 		// ``torrent_handle``. Two handles that refer to the same torrent
 		// hash to the same value.
 		TORRENT_EXPORT friend std::size_t hash_value(torrent_handle const& th);
+
+		using recheck_files_progress_callback = std::function<void(int, int)>;
 
 		// constructs a torrent handle that does not refer to a torrent.
 		// i.e. is_valid() will return false.
@@ -699,14 +703,24 @@ namespace aux {
 		// will be the highest of all torrents in the session.
 		void force_recheck() const;
 
-		// Re-hash only pieces overlapping the specified files. Pieces that are
-		// currently missing are skipped. Pieces that pass remain untouched while
-		// pieces that fail are marked missing and become eligible for download.
+		// Re-hash only pieces overlapping the specified files. Owned pieces that
+		// fail are marked missing and become eligible for download. Missing pieces
+		// that pass are restored as owned, allowing externally restored files to
+		// be recovered without a full-torrent recheck.
 		// Unlike force_recheck(), this does not reset unrelated piece state,
 		// disconnect peers, or put the torrent into the global checking queue.
 		// Boundary pieces may read bytes belonging to adjacent files because
 		// BitTorrent hashes are piece-based.
+		//
+		// The progress-callback overload reports piece-based progress as
+		// (completed, total). It is invoked on libtorrent's internal thread,
+		// not the caller's thread. The first notification is (0, total), the
+		// final successful notification is (total, total), and completed == -1
+		// means the selective check was interrupted. A (0, 0) notification
+		// means there was no work to perform. Callbacks must not throw.
 		void recheck_files(std::vector<file_index_t> files) const;
+		void recheck_files(std::vector<file_index_t> files
+			, recheck_files_progress_callback progress) const;
 
 		// the disk cache will be flushed before creating the resume data.
 		// This avoids a problem with file timestamps in the resume data in

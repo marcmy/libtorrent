@@ -381,16 +381,40 @@ namespace libtorrent {
 		async_call(&aux::torrent::recheck_files, std::move(files));
 	}
 
+	void torrent_handle::recheck_files(std::vector<file_index_t> files
+		, recheck_files_progress_callback progress) const
+	{
+		async_call(&aux::torrent::recheck_files_with_progress
+			, std::move(files), std::move(progress));
+	}
+
 	void aux::torrent::recheck_files(std::vector<file_index_t> files)
+	{
+		recheck_files_with_progress(std::move(files), {});
+	}
+
+	void aux::torrent::recheck_files_with_progress(std::vector<file_index_t> files
+		, torrent_handle::recheck_files_progress_callback progress)
 	{
 		TORRENT_ASSERT(is_single_thread());
 
+		auto const no_work = [&progress]
+		{
+			if (progress) progress(0, 0);
+		};
+
 		if (m_abort || m_deleted || !valid_metadata() || !m_storage)
+		{
+			no_work();
 			return;
+		}
 
 		if (state() == torrent_status::checking_files
 			|| state() == torrent_status::checking_resume_data)
+		{
+			no_work();
 			return;
+		}
 
 		std::vector<piece_index_t> pieces;
 		file_storage const& fs = torrent_file().layout();
@@ -404,80 +428,133 @@ namespace libtorrent {
 				file, fs.file_size(file) - 1, 1).piece;
 
 			for (piece_index_t p = first; p <= last; ++p)
-				if (have_piece(p)) pieces.push_back(p);
+				pieces.push_back(p);
 		}
 
 		std::sort(pieces.begin(), pieces.end());
 		pieces.erase(std::unique(pieces.begin(), pieces.end()), pieces.end());
-		if (pieces.empty()) return;
+		if (pieces.empty())
+		{
+			no_work();
+			return;
+		}
 
 		disk_job_flags_t flags = disk_interface::sequential_access
 			| disk_interface::volatile_read | disk_interface::flush_piece;
 		if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
 			flags |= disk_interface::v1_hash;
 
-		auto const invalidate_piece = [](std::shared_ptr<aux::torrent> const& self
-			, piece_index_t const p)
+		// Reopen files by path before hashing. Cached file handles may remain
+		// valid after a file is moved or replaced externally, notably on Windows.
+		m_ses.disk_thread().async_release_files(m_storage);
+
+		struct recheck_state
 		{
-			if (self->m_abort || !self->valid_metadata()
-				|| p < piece_index_t{0}
-				|| p >= self->m_torrent_file->end_piece())
-				return;
+			std::vector<piece_index_t> pieces;
+			std::size_t next_piece = 0;
+			std::size_t completed = 0;
+			std::size_t notify_step = 1;
+			disk_job_flags_t flags;
+			std::uint8_t generation;
+			torrent_handle::recheck_files_progress_callback progress;
+			bool done = false;
 
-			bool const was_finished = self->is_finished();
+			int total() const { return static_cast<int>(pieces.size()); }
 
-			if (self->m_seed_mode)
-				self->leave_seed_mode(seed_mode_t::skip_checking);
-			self->need_picker();
-			if (!self->m_picker->have_piece(p)) return;
+			void cancel()
+			{
+				if (done) return;
+				done = true;
+				if (progress) progress(-1, total());
+			}
 
-			self->m_file_progress.lost_piece(self->m_torrent_file->layout(), p);
-			self->m_picker->we_dont_have(p);
-			self->set_have_all(false);
-
-			// is_seed() also considers m_state == seeding. Once the picker says
-			// this piece is missing, leave that stale state before any gauge,
-			// status, or peer-interest bookkeeping observes the torrent.
-			if (self->state() == torrent_status::seeding)
-				self->set_state(torrent_status::downloading);
-
-			self->update_gauge();
-			self->set_need_save_resume(torrent_handle::if_download_progress);
-			self->update_peer_interest(was_finished);
-			self->state_updated();
-			self->update_want_peers();
+			bool piece_done()
+			{
+				if (done) return true;
+				++completed;
+				bool const finished = completed == pieces.size();
+				if (progress && (finished || (completed % notify_step) == 0))
+					progress(static_cast<int>(completed), total());
+				if (finished) done = true;
+				return finished;
+			}
 		};
 
-		std::uint8_t const gen = m_picker_generation;
-		for (piece_index_t const piece : pieces)
+		std::size_t const notify_step = std::max<std::size_t>(
+			1, (pieces.size() + 999) / 1000);
+		auto const state = std::make_shared<recheck_state>(recheck_state{
+			std::move(pieces), 0, 0, notify_step, flags, m_picker_generation
+			, std::move(progress), false});
+
+		if (state->progress) state->progress(0, state->total());
+
+		auto const schedule = std::make_shared<std::function<void()>>();
+		std::weak_ptr<std::function<void()>> const weak_schedule = schedule;
+
+		*schedule = [self = shared_from_this(), state, weak_schedule]
 		{
+			if (state->done) return;
+			if (self->m_abort || self->m_deleted
+				|| state->generation != self->m_picker_generation)
+			{
+				state->cancel();
+				return;
+			}
+			if (state->next_piece >= state->pieces.size()) return;
+
+			piece_index_t const piece = state->pieces[state->next_piece++];
 			aux::vector<sha256_hash> hashes;
-			if (torrent_file().info_hashes().has_v2())
-				hashes.resize(torrent_file().layout().blocks_in_piece2(piece));
+			if (self->torrent_file().info_hashes().has_v2())
+				hashes.resize(self->torrent_file().layout().blocks_in_piece2(piece));
+
+			auto const keep_alive = weak_schedule.lock();
+			if (!keep_alive)
+			{
+				state->cancel();
+				return;
+			}
 
 			span<sha256_hash> v2_span(hashes);
-			m_ses.disk_thread().async_hash(m_storage, piece, v2_span, flags,
-				[self = shared_from_this(), hashes1 = std::move(hashes), gen, invalidate_piece](
+			self->m_ses.disk_thread().async_hash(self->m_storage, piece, v2_span, state->flags,
+				[self, state, keep_alive, hashes1 = std::move(hashes)](
 					piece_index_t const p, sha1_hash const& h,
 					storage_error const& error) mutable
 				{
+					auto const finish_piece = [&]
+					{
+						if (!state->piece_done()) (*keep_alive)();
+					};
+
+					if (state->done) return;
 					if (self->m_abort || self->m_deleted
-						|| gen != self->m_picker_generation)
+						|| state->generation != self->m_picker_generation)
+					{
+						state->cancel();
 						return;
+					}
 
 					if (error)
 					{
 						if (error.ec == boost::system::errc::no_such_file_or_directory
 							|| error.ec == boost::asio::error::eof
-							|| error.ec == lt::errors::file_too_short)
-							invalidate_piece(self, p);
+							|| error.ec == lt::errors::file_too_short
+#ifdef TORRENT_WINDOWS
+							|| error.ec == error_code(ERROR_HANDLE_EOF, system_category())
+#endif
+							)
+							self->partfile_read_failed(p);
 						else
 							self->handle_disk_error("selective_recheck", error);
+
+						finish_piece();
 						return;
 					}
 
 					if (self->settings().get_bool(settings_pack::disable_hash_checks))
+					{
+						finish_piece();
 						return;
+					}
 
 					boost::tribool v1_passed = boost::indeterminate;
 					boost::tribool v2_passed = boost::indeterminate;
@@ -492,14 +569,44 @@ namespace libtorrent {
 					if ((v1_passed && !v2_passed) || (!v1_passed && v2_passed))
 					{
 						self->handle_inconsistent_hashes(p);
+						state->cancel();
 						return;
 					}
 
 					if (bool(v1_passed == false) || bool(v2_passed == false))
-						invalidate_piece(self, p);
+					{
+						self->partfile_read_failed(p);
+					}
+					else if ((bool(v1_passed == true) || bool(v2_passed == true))
+						&& !self->have_piece(p))
+					{
+						bool const was_finished = self->is_finished();
+						self->need_picker();
+						if (!self->m_picker->have_piece(p))
+						{
+#if TORRENT_USE_INVARIANT_CHECKS
+							TORRENT_ASSERT(!self->m_file_progress.have_piece(p));
+#endif
+							// This piece already exists on disk and just passed its hash.
+							// piece_flushed() is the supported open -> owned transition.
+							self->m_picker->piece_flushed(p);
+							self->update_gauge();
+							self->we_have(p);
+							self->update_peer_interest(was_finished);
+							self->state_updated();
+							self->update_want_peers();
+						}
+					}
+
+					finish_piece();
 				});
-		}
-		m_ses.deferred_submit_jobs();
+			self->m_ses.deferred_submit_jobs();
+		};
+
+		constexpr std::size_t max_in_flight = 4;
+		std::size_t const initial = std::min(max_in_flight, state->pieces.size());
+		for (std::size_t i = 0; i < initial; ++i)
+			(*schedule)();
 	}
 
 	void torrent_handle::resume() const
