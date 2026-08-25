@@ -593,6 +593,7 @@ namespace libtorrent {
 							self->update_gauge();
 							self->we_have(p);
 							self->update_peer_interest(was_finished);
+							self->state_updated();
 							self->update_want_peers();
 						}
 					}
