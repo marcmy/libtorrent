@@ -7,6 +7,7 @@ You may use, distribute and modify this code under the terms of the BSD license,
 see LICENSE file.
 */
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -84,7 +85,15 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	remove(file_path, ec);
 	TEST_CHECK(!ec);
 
-	h.recheck_files({0_file});
+	std::atomic<int> progress_completed{-2};
+	std::atomic<int> progress_total{-2};
+	auto const on_progress = [&progress_completed, &progress_total](int const completed, int const total)
+	{
+		progress_completed.store(completed);
+		progress_total.store(total);
+	};
+
+	h.recheck_files({0_file}, on_progress);
 
 	bool invalidated = false;
 	for (int i = 0; i < 100; ++i)
@@ -98,6 +107,10 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	}
 
 	TEST_CHECK(invalidated);
+	for (int i = 0; i < 100 && progress_completed.load() != progress_total.load(); ++i)
+		std::this_thread::sleep_for(10ms);
+	TEST_CHECK(progress_total.load() > 0);
+	TEST_EQUAL(progress_completed.load(), progress_total.load());
 	TEST_CHECK(h.is_valid());
 
 	// Put the exact bytes back and verify that selective recheck can promote
@@ -107,7 +120,9 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	restored.write(original_data.data(), static_cast<std::streamsize>(original_data.size()));
 	restored.close();
 
-	h.recheck_files({0_file});
+	progress_completed.store(-2);
+	progress_total.store(-2);
+	h.recheck_files({0_file}, on_progress);
 
 	bool repromoted = false;
 	for (int i = 0; i < 100; ++i)
@@ -121,6 +136,10 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	}
 
 	TEST_CHECK(repromoted);
+	for (int i = 0; i < 100 && progress_completed.load() != progress_total.load(); ++i)
+		std::this_thread::sleep_for(10ms);
+	TEST_CHECK(progress_total.load() > 0);
+	TEST_EQUAL(progress_completed.load(), progress_total.load());
 	TEST_CHECK(h.is_valid());
 
 	remove_all(dir, ec);

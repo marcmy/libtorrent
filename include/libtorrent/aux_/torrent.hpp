@@ -464,6 +464,8 @@ namespace libtorrent::aux {
 			std::uint8_t picker_gen);
 		void files_checked();
 		void recheck_files(std::vector<file_index_t> files);
+		void recheck_files_with_progress(std::vector<file_index_t> files
+			, torrent_handle::recheck_files_progress_callback progress);
 		void start_checking();
 
 		void start_announcing();
