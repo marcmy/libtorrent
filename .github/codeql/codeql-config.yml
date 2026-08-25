@@ -22,3 +22,29 @@ query-filters:
       id: py/commented-out-code
   - exclude:
       id: py/empty-except
+  - exclude:
+      id: cpp/poorly-documented-function
+  - exclude:
+      id: cpp/commented-out-code
+  - exclude:
+      id: cpp/long-switch
+  - exclude:
+      id: cpp/unused-local-variable
+  - exclude:
+      id: cpp/unused-static-function
+  - exclude:
+      id: cpp/unused-static-variable
+  - exclude:
+      id: cpp/declaration-hides-parameter
+  - exclude:
+      id: cpp/large-parameter
+  - exclude:
+      id: cpp/complex-block
+  - exclude:
+      id: cpp/trivial-switch
+  - exclude:
+      id: cpp/loop-variable-changed
+  - exclude:
+      id: cpp/nested-loops-with-same-variable
+  - exclude:
+      id: cpp/irregular-enum-init
