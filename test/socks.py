@@ -186,12 +186,15 @@ class SocksHandler(StreamRequestHandler):
         if version != b'\x05':
             error('Wrong version number (%r) closing...' % version)
             self.close_request()
+            return
         elif cmd != CONNECT and cmd != UDP_ASSOCIATE:
             error('Only supports connect and udp-associate method not (%r) closing' % cmd)
             self.close_request()
+            return
         elif zero != b'\x00':
             error('Mangled request. Reserved field (%r) is not null' % zero)
             self.close_request()
+            return
 
         if address_type == IPV4:
             raw_dest_address = self.read(4)
@@ -206,6 +209,7 @@ class SocksHandler(StreamRequestHandler):
         else:
             error('Unknown addressing (%r)' % address_type)
             self.close_request()
+            return
 
         raw_dest_port = self.read(2)
         dest_port, = unpack('>H', raw_dest_port)
