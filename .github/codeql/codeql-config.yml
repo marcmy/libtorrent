@@ -2,3 +2,7 @@ name: "CodeQL config"
 
 paths-ignore:
   - deps/**
+
+query-filters:
+  - exclude:
+      id: actions/missing-workflow-permissions
