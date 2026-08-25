@@ -899,8 +899,8 @@ void disk_cache::free_piece(cached_piece_entry const& cpe)
 
 // this should be called by a disk thread
 // the callback should return the number of blocks it successfully flushed
-// to disk. Optimistic flush means we'll only flush pieces that are ready to be
-// flushed, and already hashed. We don't gain anything from keeping those in
+// to disk. Optimistic flush means we'll only flush pieces that are ready to
+// be flushed, and already hashed. We don't gain anything from keeping those in
 // the cache.
 void disk_cache::flush_to_disk(std::function<int(bitfield&, span<disk_job* const>)> f,
 	int const target_blocks,
