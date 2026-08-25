@@ -76,7 +76,7 @@ for b in build_stage_dirs():
     for i in binaries:
         p = os.path.join(b, i)
         if not os.path.exists(p):
-            print('make sure \"%s\" is available in ./%s' % (i, b))
+            print('make sure "%s" is available in ./%s' % (i, b))
             sys.exit(1)
 
 # make sure we have a test torrent
@@ -121,7 +121,7 @@ def build_utorrent_commandline(config, port):
         cfg.write('20:ul_slots_per_torrenti%de' % num_peers)
         cfg.write('17:conns_per_torrenti%de' % num_peers)
         cfg.write('14:conns_globallyi%de' % num_peers)
-        cfg.write('9:bind_porti%d' % port)
+        cfg.write('9:bind_porti%de' % port)
         cfg.write('19:dir_active_download%d:%s' % (len(config['save-path']),
                                                    config['save-path']))
         cfg.write('19:diskio.sparse_filesi1e')
@@ -186,8 +186,8 @@ def build_libtorrent_commandline(config, port):
     return ('./client_test -k -O -F 500 --enable_upnp=0 --enable_natpmp=0 '
             '--enable_dht=0 --mixed_mode_algorithm=0 --peer_timeout=%d '
             '--listen_queue_size=%d --unchoke_slots_limit=%d -T %d '
-            '--connections_limit=%d --cache_size=%d -s \"%s\" '
-            '--listen_interfaces=\"0.0.0.0:%d\" --aio_threads=%d '
+            '--connections_limit=%d --cache_size=%d -s "%s" '
+            '--listen_interfaces="0.0.0.0:%d" --aio_threads=%d '
             '-f %s/client.log %s') % (
                 test_duration, num_peers, num_peers, num_peers, num_peers, config['cache-size'],
                 config['save-path'], port, config['disk-threads'], target_folder, torrent_path)
