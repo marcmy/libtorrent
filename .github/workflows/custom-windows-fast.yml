@@ -3,61 +3,22 @@ name: Custom Windows Fast Build
 on:
   push:
     branches:
-      - custom/qbittorrent-2.1
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "bindings/python/**"
-      - ".github/**"
-  pull_request:
-    branches:
-      - custom/qbittorrent-2.1
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "bindings/python/**"
-      - ".github/**"
-  workflow_dispatch:
+      - fix/selective-recheck-crash
 
 permissions:
   contents: write
 
-concurrency:
-  group: custom-windows-fast-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build:
-    name: Build custom libtorrent (x64)
-    runs-on: windows-latest
-    permissions:
-      contents: write
-      actions: write
-
-    defaults:
-      run:
-        shell: pwsh
-
-    env:
-      boost_path: "${{ github.workspace }}/.ci-cache/boost"
-      vcpkg_binary_cache: "${{ github.workspace }}/.ci-cache/vcpkg-binary-cache"
-      vcpkg_path: "c:/vcpkg"
-      target_arch: "x64"
-      vcpkg_triplet: "x64-windows-static-md-release"
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-
+  apply-progress-patch:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout libtorrent
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: true
-          submodules: recursive
-          fetch-depth: 2
-          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
 
-      - name: Apply selective recheck progress patch
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/selective-recheck-crash'
+      - name: Apply patch and restore workflow
         shell: python
         run: |
           from pathlib import Path
@@ -70,8 +31,6 @@ jobs:
                   raise SystemExit(f"expected text not found in {path}: {old[:120]!r}")
               p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-          # Public API: retain the existing one-argument call and add an optional
-          # piece-based progress callback. -1 means the operation was cancelled.
           replace_once(
               "include/libtorrent/torrent_handle.hpp",
               '#include "libtorrent/config.hpp"\n',
@@ -116,244 +75,240 @@ jobs:
           text = source.read_text(encoding="utf-8")
           start = text.index("\tvoid torrent_handle::recheck_files(std::vector<file_index_t> files) const")
           end = text.index("\n\tvoid torrent_handle::resume() const", start)
-          block = r'''	void torrent_handle::recheck_files(std::vector<file_index_t> files) const
-	{
-		async_call(&aux::torrent::recheck_files, std::move(files));
-	}
+          block = """\tvoid torrent_handle::recheck_files(std::vector<file_index_t> files) const
+          \t{
+          \t\tasync_call(&aux::torrent::recheck_files, std::move(files));
+          \t}
 
-	void torrent_handle::recheck_files(std::vector<file_index_t> files
-		, recheck_files_progress_callback progress) const
-	{
-		async_call(&aux::torrent::recheck_files_with_progress
-			, std::move(files), std::move(progress));
-	}
+          \tvoid torrent_handle::recheck_files(std::vector<file_index_t> files
+          \t\t, recheck_files_progress_callback progress) const
+          \t{
+          \t\tasync_call(&aux::torrent::recheck_files_with_progress
+          \t\t\t, std::move(files), std::move(progress));
+          \t}
 
-	void aux::torrent::recheck_files(std::vector<file_index_t> files)
-	{
-		recheck_files_with_progress(std::move(files), {});
-	}
+          \tvoid aux::torrent::recheck_files(std::vector<file_index_t> files)
+          \t{
+          \t\trecheck_files_with_progress(std::move(files), {});
+          \t}
 
-	void aux::torrent::recheck_files_with_progress(std::vector<file_index_t> files
-		, torrent_handle::recheck_files_progress_callback progress)
-	{
-		TORRENT_ASSERT(is_single_thread());
+          \tvoid aux::torrent::recheck_files_with_progress(std::vector<file_index_t> files
+          \t\t, torrent_handle::recheck_files_progress_callback progress)
+          \t{
+          \t\tTORRENT_ASSERT(is_single_thread());
 
-		auto const no_work = [&progress]
-		{
-			if (progress) progress(0, 0);
-		};
+          \t\tauto const no_work = [&progress]
+          \t\t{
+          \t\t\tif (progress) progress(0, 0);
+          \t\t};
 
-		if (m_abort || m_deleted || !valid_metadata() || !m_storage)
-		{
-			no_work();
-			return;
-		}
+          \t\tif (m_abort || m_deleted || !valid_metadata() || !m_storage)
+          \t\t{
+          \t\t\tno_work();
+          \t\t\treturn;
+          \t\t}
 
-		if (state() == torrent_status::checking_files
-			|| state() == torrent_status::checking_resume_data)
-		{
-			no_work();
-			return;
-		}
+          \t\tif (state() == torrent_status::checking_files
+          \t\t\t|| state() == torrent_status::checking_resume_data)
+          \t\t{
+          \t\t\tno_work();
+          \t\t\treturn;
+          \t\t}
 
-		std::vector<piece_index_t> pieces;
-		file_storage const& fs = torrent_file().layout();
-		for (file_index_t const file : files)
-		{
-			if (file < file_index_t{0} || file >= fs.end_file()) continue;
-			if (fs.pad_file_at(file) || fs.file_size(file) == 0) continue;
+          \t\tstd::vector<piece_index_t> pieces;
+          \t\tfile_storage const& fs = torrent_file().layout();
+          \t\tfor (file_index_t const file : files)
+          \t\t{
+          \t\t\tif (file < file_index_t{0} || file >= fs.end_file()) continue;
+          \t\t\tif (fs.pad_file_at(file) || fs.file_size(file) == 0) continue;
 
-			piece_index_t const first = torrent_file().map_file(file, 0, 1).piece;
-			piece_index_t const last = torrent_file().map_file(
-				file, fs.file_size(file) - 1, 1).piece;
+          \t\t\tpiece_index_t const first = torrent_file().map_file(file, 0, 1).piece;
+          \t\t\tpiece_index_t const last = torrent_file().map_file(
+          \t\t\t\tfile, fs.file_size(file) - 1, 1).piece;
 
-			for (piece_index_t p = first; p <= last; ++p)
-				pieces.push_back(p);
-		}
+          \t\t\tfor (piece_index_t p = first; p <= last; ++p)
+          \t\t\t\tpieces.push_back(p);
+          \t\t}
 
-		std::sort(pieces.begin(), pieces.end());
-		pieces.erase(std::unique(pieces.begin(), pieces.end()), pieces.end());
-		if (pieces.empty())
-		{
-			no_work();
-			return;
-		}
+          \t\tstd::sort(pieces.begin(), pieces.end());
+          \t\tpieces.erase(std::unique(pieces.begin(), pieces.end()), pieces.end());
+          \t\tif (pieces.empty())
+          \t\t{
+          \t\t\tno_work();
+          \t\t\treturn;
+          \t\t}
 
-		disk_job_flags_t flags = disk_interface::sequential_access
-			| disk_interface::volatile_read | disk_interface::flush_piece;
-		if (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
-			flags |= disk_interface::v1_hash;
+          \t\tdisk_job_flags_t flags = disk_interface::sequential_access
+          \t\t\t| disk_interface::volatile_read | disk_interface::flush_piece;
+          \t\tif (torrent_file().info_hashes().has_v1() && !m_disable_v1_hashes)
+          \t\t\tflags |= disk_interface::v1_hash;
 
-		// Reopen files by path before hashing. Cached file handles may remain
-		// valid after a file is moved or replaced externally, notably on Windows.
-		m_ses.disk_thread().async_release_files(m_storage);
+          \t\t// Reopen files by path before hashing. Cached file handles may remain
+          \t\t// valid after a file is moved or replaced externally, notably on Windows.
+          \t\tm_ses.disk_thread().async_release_files(m_storage);
 
-		struct recheck_state
-		{
-			std::vector<piece_index_t> pieces;
-			std::size_t next_piece = 0;
-			std::size_t completed = 0;
-			std::size_t notify_step = 1;
-			disk_job_flags_t flags;
-			std::uint8_t generation;
-			torrent_handle::recheck_files_progress_callback progress;
-			bool done = false;
+          \t\tstruct recheck_state
+          \t\t{
+          \t\t\tstd::vector<piece_index_t> pieces;
+          \t\t\tstd::size_t next_piece = 0;
+          \t\t\tstd::size_t completed = 0;
+          \t\t\tstd::size_t notify_step = 1;
+          \t\t\tdisk_job_flags_t flags;
+          \t\t\tstd::uint8_t generation;
+          \t\t\ttorrent_handle::recheck_files_progress_callback progress;
+          \t\t\tbool done = false;
 
-			int total() const { return static_cast<int>(pieces.size()); }
+          \t\t\tint total() const { return static_cast<int>(pieces.size()); }
 
-			void cancel()
-			{
-				if (done) return;
-				done = true;
-				if (progress) progress(-1, total());
-			}
+          \t\t\tvoid cancel()
+          \t\t\t{
+          \t\t\t\tif (done) return;
+          \t\t\t\tdone = true;
+          \t\t\t\tif (progress) progress(-1, total());
+          \t\t\t}
 
-			bool piece_done()
-			{
-				if (done) return true;
-				++completed;
-				bool const finished = completed == pieces.size();
-				if (progress && (finished || (completed % notify_step) == 0))
-					progress(static_cast<int>(completed), total());
-				if (finished) done = true;
-				return finished;
-			}
-		};
+          \t\t\tbool piece_done()
+          \t\t\t{
+          \t\t\t\tif (done) return true;
+          \t\t\t\t++completed;
+          \t\t\t\tbool const finished = completed == pieces.size();
+          \t\t\t\tif (progress && (finished || (completed % notify_step) == 0))
+          \t\t\t\t\tprogress(static_cast<int>(completed), total());
+          \t\t\t\tif (finished) done = true;
+          \t\t\t\treturn finished;
+          \t\t\t}
+          \t\t};
 
-		std::size_t const notify_step = std::max<std::size_t>(
-			1, (pieces.size() + 999) / 1000);
-		auto const state = std::make_shared<recheck_state>(recheck_state{
-			std::move(pieces), 0, 0, notify_step, flags, m_picker_generation
-			, std::move(progress), false});
+          \t\tstd::size_t const notify_step = std::max<std::size_t>(
+          \t\t\t1, (pieces.size() + 999) / 1000);
+          \t\tauto const state = std::make_shared<recheck_state>(recheck_state{
+          \t\t\tstd::move(pieces), 0, 0, notify_step, flags, m_picker_generation
+          \t\t\t, std::move(progress), false});
 
-		if (state->progress) state->progress(0, state->total());
+          \t\tif (state->progress) state->progress(0, state->total());
 
-		auto const schedule = std::make_shared<std::function<void()>>();
-		std::weak_ptr<std::function<void()>> const weak_schedule = schedule;
+          \t\tauto const schedule = std::make_shared<std::function<void()>>();
+          \t\tstd::weak_ptr<std::function<void()>> const weak_schedule = schedule;
 
-		*schedule = [self = shared_from_this(), state, weak_schedule]
-		{
-			if (state->done) return;
-			if (self->m_abort || self->m_deleted
-				|| state->generation != self->m_picker_generation)
-			{
-				state->cancel();
-				return;
-			}
-			if (state->next_piece >= state->pieces.size()) return;
+          \t\t*schedule = [self = shared_from_this(), state, weak_schedule]
+          \t\t{
+          \t\t\tif (state->done) return;
+          \t\t\tif (self->m_abort || self->m_deleted
+          \t\t\t\t|| state->generation != self->m_picker_generation)
+          \t\t\t{
+          \t\t\t\tstate->cancel();
+          \t\t\t\treturn;
+          \t\t\t}
+          \t\t\tif (state->next_piece >= state->pieces.size()) return;
 
-			piece_index_t const piece = state->pieces[state->next_piece++];
-			aux::vector<sha256_hash> hashes;
-			if (self->torrent_file().info_hashes().has_v2())
-				hashes.resize(self->torrent_file().layout().blocks_in_piece2(piece));
+          \t\t\tpiece_index_t const piece = state->pieces[state->next_piece++];
+          \t\t\taux::vector<sha256_hash> hashes;
+          \t\t\tif (self->torrent_file().info_hashes().has_v2())
+          \t\t\t\thashes.resize(self->torrent_file().layout().blocks_in_piece2(piece));
 
-			auto const keep_alive = weak_schedule.lock();
-			if (!keep_alive)
-			{
-				state->cancel();
-				return;
-			}
+          \t\t\tauto const keep_alive = weak_schedule.lock();
+          \t\t\tif (!keep_alive)
+          \t\t\t{
+          \t\t\t\tstate->cancel();
+          \t\t\t\treturn;
+          \t\t\t}
 
-			span<sha256_hash> v2_span(hashes);
-			self->m_ses.disk_thread().async_hash(self->m_storage, piece, v2_span, state->flags,
-				[self, state, keep_alive, hashes1 = std::move(hashes)](
-					piece_index_t const p, sha1_hash const& h,
-					storage_error const& error) mutable
-				{
-					auto const finish_piece = [&]
-					{
-						if (!state->piece_done()) (*keep_alive)();
-					};
+          \t\t\tspan<sha256_hash> v2_span(hashes);
+          \t\t\tself->m_ses.disk_thread().async_hash(self->m_storage, piece, v2_span, state->flags,
+          \t\t\t\t[self, state, keep_alive, hashes1 = std::move(hashes)](
+          \t\t\t\t\tpiece_index_t const p, sha1_hash const& h,
+          \t\t\t\t\tstorage_error const& error) mutable
+          \t\t\t\t{
+          \t\t\t\t\tauto const finish_piece = [&]
+          \t\t\t\t\t{
+          \t\t\t\t\t\tif (!state->piece_done()) (*keep_alive)();
+          \t\t\t\t\t};
 
-					if (state->done) return;
-					if (self->m_abort || self->m_deleted
-						|| state->generation != self->m_picker_generation)
-					{
-						state->cancel();
-						return;
-					}
+          \t\t\t\t\tif (state->done) return;
+          \t\t\t\t\tif (self->m_abort || self->m_deleted
+          \t\t\t\t\t\t|| state->generation != self->m_picker_generation)
+          \t\t\t\t\t{
+          \t\t\t\t\t\tstate->cancel();
+          \t\t\t\t\t\treturn;
+          \t\t\t\t\t}
 
-					if (error)
-					{
-						if (error.ec == boost::system::errc::no_such_file_or_directory
-							|| error.ec == boost::asio::error::eof
-							|| error.ec == lt::errors::file_too_short
-#ifdef TORRENT_WINDOWS
-							|| error.ec == error_code(ERROR_HANDLE_EOF, system_category())
-#endif
-							)
-							self->partfile_read_failed(p);
-						else
-							self->handle_disk_error("selective_recheck", error);
+          \t\t\t\t\tif (error)
+          \t\t\t\t\t{
+          \t\t\t\t\t\tif (error.ec == boost::system::errc::no_such_file_or_directory
+          \t\t\t\t\t\t\t|| error.ec == boost::asio::error::eof
+          \t\t\t\t\t\t\t|| error.ec == lt::errors::file_too_short
+          #ifdef TORRENT_WINDOWS
+          \t\t\t\t\t\t\t|| error.ec == error_code(ERROR_HANDLE_EOF, system_category())
+          #endif
+          \t\t\t\t\t\t\t)
+          \t\t\t\t\t\t\tself->partfile_read_failed(p);
+          \t\t\t\t\t\telse
+          \t\t\t\t\t\t\tself->handle_disk_error("selective_recheck", error);
 
-						finish_piece();
-						return;
-					}
+          \t\t\t\t\t\tfinish_piece();
+          \t\t\t\t\t\treturn;
+          \t\t\t\t\t}
 
-					if (self->settings().get_bool(settings_pack::disable_hash_checks))
-					{
-						finish_piece();
-						return;
-					}
+          \t\t\t\t\tif (self->settings().get_bool(settings_pack::disable_hash_checks))
+          \t\t\t\t\t{
+          \t\t\t\t\t\tfinish_piece();
+          \t\t\t\t\t\treturn;
+          \t\t\t\t\t}
 
-					boost::tribool v1_passed = boost::indeterminate;
-					boost::tribool v2_passed = boost::indeterminate;
-					if (self->torrent_file().info_hashes().has_v1()
-						&& !self->m_disable_v1_hashes)
-						v1_passed = h == self->torrent_file().hash_for_piece(p);
+          \t\t\t\t\tboost::tribool v1_passed = boost::indeterminate;
+          \t\t\t\t\tboost::tribool v2_passed = boost::indeterminate;
+          \t\t\t\t\tif (self->torrent_file().info_hashes().has_v1()
+          \t\t\t\t\t\t&& !self->m_disable_v1_hashes)
+          \t\t\t\t\t\tv1_passed = h == self->torrent_file().hash_for_piece(p);
 
-					if (self->torrent_file().info_hashes().has_v2()
-						&& !bool(v1_passed == false))
-						v2_passed = self->on_blocks_hashed(p, hashes1);
+          \t\t\t\t\tif (self->torrent_file().info_hashes().has_v2()
+          \t\t\t\t\t\t&& !bool(v1_passed == false))
+          \t\t\t\t\t\tv2_passed = self->on_blocks_hashed(p, hashes1);
 
-					if ((v1_passed && !v2_passed) || (!v1_passed && v2_passed))
-					{
-						self->handle_inconsistent_hashes(p);
-						state->cancel();
-						return;
-					}
+          \t\t\t\t\tif ((v1_passed && !v2_passed) || (!v1_passed && v2_passed))
+          \t\t\t\t\t{
+          \t\t\t\t\t\tself->handle_inconsistent_hashes(p);
+          \t\t\t\t\t\tstate->cancel();
+          \t\t\t\t\t\treturn;
+          \t\t\t\t\t}
 
-					if (bool(v1_passed == false) || bool(v2_passed == false))
-					{
-						self->partfile_read_failed(p);
-					}
-					else if ((bool(v1_passed == true) || bool(v2_passed == true))
-						&& !self->have_piece(p))
-					{
-						bool const was_finished = self->is_finished();
-						self->need_picker();
-						if (!self->m_picker->have_piece(p))
-						{
-#if TORRENT_USE_INVARIANT_CHECKS
-							TORRENT_ASSERT(!self->m_file_progress.have_piece(p));
-#endif
-							// This piece already exists on disk and just passed its hash.
-							// piece_flushed() is the supported open -> owned transition.
-							self->m_picker->piece_flushed(p);
-							self->update_gauge();
-							self->we_have(p);
-							self->update_peer_interest(was_finished);
-							self->update_want_peers();
-						}
-					}
+          \t\t\t\t\tif (bool(v1_passed == false) || bool(v2_passed == false))
+          \t\t\t\t\t{
+          \t\t\t\t\t\tself->partfile_read_failed(p);
+          \t\t\t\t\t}
+          \t\t\t\t\telse if ((bool(v1_passed == true) || bool(v2_passed == true))
+          \t\t\t\t\t\t&& !self->have_piece(p))
+          \t\t\t\t\t{
+          \t\t\t\t\t\tbool const was_finished = self->is_finished();
+          \t\t\t\t\t\tself->need_picker();
+          \t\t\t\t\t\tif (!self->m_picker->have_piece(p))
+          \t\t\t\t\t\t{
+          #if TORRENT_USE_INVARIANT_CHECKS
+          \t\t\t\t\t\t\tTORRENT_ASSERT(!self->m_file_progress.have_piece(p));
+          #endif
+          \t\t\t\t\t\t\t// This piece already exists on disk and just passed its hash.
+          \t\t\t\t\t\t\t// piece_flushed() is the supported open -> owned transition.
+          \t\t\t\t\t\t\tself->m_picker->piece_flushed(p);
+          \t\t\t\t\t\t\tself->update_gauge();
+          \t\t\t\t\t\t\tself->we_have(p);
+          \t\t\t\t\t\t\tself->update_peer_interest(was_finished);
+          \t\t\t\t\t\t\tself->update_want_peers();
+          \t\t\t\t\t\t}
+          \t\t\t\t\t}
 
-					finish_piece();
-				});
-			self->m_ses.deferred_submit_jobs();
-		};
+          \t\t\t\t\tfinish_piece();
+          \t\t\t\t});
+          \t\t\tself->m_ses.deferred_submit_jobs();
+          \t\t};
 
-		// Keep selective checks bounded. Large file/folder selections should not
-		// enqueue every piece hash (and its v2 hash buffer) simultaneously.
-		constexpr std::size_t max_in_flight = 4;
-		std::size_t const initial = std::min(max_in_flight, state->pieces.size());
-		for (std::size_t i = 0; i < initial; ++i)
-			(*schedule)();
-	}
-'''
+          \t\tconstexpr std::size_t max_in_flight = 4;
+          \t\tstd::size_t const initial = std::min(max_in_flight, state->pieces.size());
+          \t\tfor (std::size_t i = 0; i < initial; ++i)
+          \t\t\t(*schedule)();
+          \t}
+          """
           source.write_text(text[:start] + block + text[end:], encoding="utf-8")
 
-          # Extend the regression test so both demotion and restoration must also
-          # report a complete progress sequence.
           replace_once(
               "test/test_selective_recheck.cpp",
               '#include <chrono>\n',
@@ -402,169 +357,13 @@ jobs:
               '\tTEST_CHECK(h.is_valid());\n')
 
           marker = Path("tools/.selective-progress-trigger")
-          if marker.exists(): marker.unlink()
+          if marker.exists():
+              marker.unlink()
 
           subprocess.run(["git", "fetch", "origin", "custom/qbittorrent-2.1", "--depth=1"], check=True)
           subprocess.run(["git", "checkout", "FETCH_HEAD", "--", ".github/workflows/custom-windows-fast.yml"], check=True)
           subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
           subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
-          subprocess.run(["git", "add", "include/libtorrent/torrent_handle.hpp", "include/libtorrent/aux_/torrent.hpp", "src/torrent_handle.cpp", "test/test_selective_recheck.cpp", ".github/workflows/custom-windows-fast.yml", "tools/.selective-progress-trigger"], check=True)
+          subprocess.run(["git", "add", "-A"], check=True)
           subprocess.run(["git", "commit", "-m", "feat: report selective recheck progress"], check=True)
           subprocess.run(["git", "push", "origin", "HEAD:fix/selective-recheck-crash"], check=True)
-
-      - name: Setup devcmd
-        uses: TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9 # v4.1.0
-        with:
-          arch: ${{ env.target_arch }}
-
-      - name: Install Ninja
-        run: |
-          if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
-          {
-            choco install ninja
-          }
-          ninja --version
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        with:
-          version: "v0.17.0"
-
-      - name: Record vcpkg revision
-        id: vcpkg-revision
-        run: |
-          $sha = git -C "${{ env.vcpkg_path }}" rev-parse HEAD
-          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Cache vcpkg binaries
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.vcpkg_binary_cache }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ env.vcpkg_triplet }}-${{ steps.vcpkg-revision.outputs.sha }}
-          restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ env.vcpkg_triplet }}-
-
-      - name: Configure vcpkg triplet
-        run: |
-          New-Item -ItemType Directory -Force -Path "${{ env.vcpkg_binary_cache }}" | Out-Null
-          New-Item `
-            -Force `
-            -ItemType File `
-            -Path "${{ env.vcpkg_path }}/triplets_overlay/${{ env.vcpkg_triplet }}.cmake"
-          Add-Content `
-            -Path "${{ env.vcpkg_path }}/triplets_overlay/${{ env.vcpkg_triplet }}.cmake" `
-            -Value @("set(VCPKG_TARGET_ARCHITECTURE ${{ env.target_arch }})",
-              "set(VCPKG_LIBRARY_LINKAGE static)",
-              "set(VCPKG_CRT_LINKAGE dynamic)",
-              "set(VCPKG_BUILD_TYPE release)")
-
-          $packages = `
-            "boost-build:${{ env.vcpkg_triplet }}",
-            "openssl:${{ env.vcpkg_triplet }}",
-            "zlib:${{ env.vcpkg_triplet }}"
-          ${{ env.vcpkg_path }}/vcpkg.exe install `
-            --binarysource="clear;files,${{ env.vcpkg_binary_cache }},readwrite" `
-            --clean-after-build `
-            --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" `
-            $packages
-
-      - name: Cache Boost headers
-        id: boost-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.boost_path }}
-          key: boost-windows-msvc-1.91.0
-
-      - name: Install Boost headers
-        if: steps.boost-cache.outputs.cache-hit != 'true'
-        env:
-          boost_version: "1.91.0"
-          boost_archive_version: "1_91_0"
-        run: |
-          $boostUrl = "https://archives.boost.io/release/${{ env.boost_version }}/source/boost_${{ env.boost_archive_version }}.tar.gz"
-          $fallbackUrl = "https://sourceforge.net/projects/boost/files/boost/${{ env.boost_version }}/source/boost_${{ env.boost_archive_version }}.tar.gz"
-          curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boostUrl"
-          tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
-          if ($LastExitCode -ne 0)
-          {
-            curl -L -o "${{ runner.temp }}/boost.tar.gz" "$fallbackUrl"
-            tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
-          }
-          move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
-          cd "${{ env.boost_path }}"
-          ${{ env.vcpkg_path }}/installed/${{ env.vcpkg_triplet }}/tools/boost-build/b2.exe `
-            stage `
-            toolset=msvc `
-            --stagedir=.\ `
-            --with-headers
-
-      - name: Configure
-        run: |
-          $env:CFLAGS += " /guard:cf"
-          $env:CXXFLAGS += " /guard:cf"
-          $env:LDFLAGS += " /GUARD:CF"
-          cmake `
-            -B build `
-            -G "Ninja" `
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
-            -DCMAKE_CXX_STANDARD=20 `
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
-            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" `
-            -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded `
-            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW `
-            -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
-            -DBUILD_SHARED_LIBS=OFF `
-            -Dbuild_tools=ON `
-            -Ddeprecated-functions=OFF `
-            -Dstatic_runtime=OFF `
-            -DVCPKG_TARGET_TRIPLET=${{ env.vcpkg_triplet }} `
-            -Dwebtorrent=ON
-
-      - name: Build and install
-        run: |
-          cmake --build build --target torrent-rasterbar --parallel
-          cmake --build build --target checking_benchmark checking_io_benchmark --parallel
-          cmake --install build
-
-      - name: Show sccache stats
-        if: always()
-        continue-on-error: true
-        run: sccache --show-stats
-
-      - name: Upload custom libtorrent
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: libtorrent-custom-windows-x64-${{ github.sha }}
-          path: |
-            install
-            build/compile_commands.json
-            build/tools/checking_benchmark.exe
-            build/tools/checking_benchmark.pdb
-            build/tools/checking_io_benchmark.exe
-            build/tools/checking_io_benchmark.pdb
-            tools/run_checking_matrix.ps1
-
-  dispatch-qbittorrent:
-    name: Trigger qBittorrent build
-    if: false
-    needs: build
-    runs-on: ubuntu-latest
-    environment: qbittorrent-sync
-    permissions: {}
-
-    steps:
-      - run: echo "disabled for self-cleaning progress patch run"
-
-  dispatch-qbittorrent-pr:
-    name: Trigger qBittorrent PR validation
-    if: false
-    needs: build
-    runs-on: ubuntu-latest
-    environment: qbittorrent-sync
-    permissions: {}
-
-    steps:
-      - run: echo "disabled for self-cleaning progress patch run"
