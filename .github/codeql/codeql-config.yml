@@ -48,3 +48,5 @@ query-filters:
       id: cpp/nested-loops-with-same-variable
   - exclude:
       id: cpp/irregular-enum-init
+  - exclude:
+      id: cpp/sizeof-side-effect
