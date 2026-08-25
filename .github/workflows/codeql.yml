@@ -1,8 +1,9 @@
 name: "CodeQL"
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ custom/qbittorrent-2.1, RC_2_1, master ]
+    branches: [ custom/qbittorrent-2.1, master ]
   pull_request:
   schedule:
     - cron: "3 12 * * 2"
