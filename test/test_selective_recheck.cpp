@@ -24,6 +24,7 @@ see LICENSE file.
 #include "settings.hpp"
 #include "setup_transfer.hpp"
 #include "test.hpp"
+#include "test_utils.hpp"
 
 using namespace lt;
 using namespace std::chrono_literals;
