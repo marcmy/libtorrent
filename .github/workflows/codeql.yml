@@ -34,24 +34,24 @@ jobs:
           fetch-depth: 1
           filter: tree:0
 
-      - name: Install Packages (cpp)
+      # No-build mode lets CodeQL honor paths-ignore for C/C++, so vendored
+      # sources under deps/** are not treated as first-party findings.
+      - name: Initialize CodeQL (cpp)
         if: ${{ matrix.language == 'cpp' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libboost-all-dev libssl-dev ninja-build
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: +security-and-quality
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Initialize CodeQL
+        if: ${{ matrix.language != 'cpp' }}
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: +security-and-quality
           config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Build cpp
-        if: ${{ matrix.language == 'cpp' }}
-        run: |
-          cmake -Dbuild_examples=ON -Dbuild_tests=ON -Dbuild_tools=ON -GNinja .
-          cmake --build .
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
