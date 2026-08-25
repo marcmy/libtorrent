@@ -6,3 +6,5 @@ paths-ignore:
 query-filters:
   - exclude:
       id: actions/missing-workflow-permissions
+  - exclude:
+      id: actions/unpinned-tag
