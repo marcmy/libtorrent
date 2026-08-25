@@ -2,14 +2,14 @@ name: "CodeQL"
 
 on:
   push:
-    branches: [ RC_2_1, master ]
+    branches: [ custom/qbittorrent-2.1, RC_2_1, master ]
   pull_request:
   schedule:
     - cron: "3 12 * * 2"
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ cpp ]
+        language: [ cpp, python, actions ]
 
     steps:
       - name: Checkout
