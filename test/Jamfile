@@ -202,6 +202,7 @@ run test_file.cpp ;
 run test_fast_extension.cpp ;
 run test_privacy.cpp ;
 run test_recheck.cpp ;
+run test_selective_recheck.cpp ;
 run test_read_resume.cpp ;
 run test_hash_picker.cpp ;
 run test_torrent.cpp ;

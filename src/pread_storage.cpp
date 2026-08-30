@@ -454,6 +454,22 @@ namespace libtorrent::aux {
 		// make sure we can pick up new files added to the download directory when
 		// we start the torrent again
 		m_stat_cache.clear();
+
+		// Refresh skipped-file backing after the handles and stat cache have been
+		// released. A priority-0 file that was absent earlier may have been restored
+		// externally. In that case its real file must become authoritative again;
+		// otherwise selective recheck would keep hashing stale/missing part-file data.
+		filenames const fs = names();
+		for (file_index_t const i : m_file_priority.range())
+		{
+			if (m_file_priority[i] != dont_download || fs.pad_file_at(i))
+				continue;
+
+			error_code error;
+			auto const size = m_stat_cache.get_filesize(i, fs, m_save_path, error);
+			if (!error && size > 0)
+				use_partfile(i, false);
+		}
 	}
 
 	void pread_storage::delete_files(remove_flags_t const options, storage_error& ec)

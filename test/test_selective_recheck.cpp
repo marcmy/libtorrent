@@ -16,6 +16,7 @@ see LICENSE file.
 
 #include "libtorrent/aux_/path.hpp"
 #include "libtorrent/alert_types.hpp"
+#include "libtorrent/download_priority.hpp"
 #include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
 #include "libtorrent/torrent_flags.hpp"
@@ -114,12 +115,32 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	TEST_EQUAL(progress_completed.load(), progress_total.load());
 	TEST_CHECK(h.is_valid());
 
-	// Put the exact bytes back and verify that selective recheck can promote
-	// the missing piece again without requiring a full force_recheck().
-	std::ofstream restored(file_path.c_str(), std::ios::binary);
+	// Keep the file skipped while it is absent. This makes storage route it to
+	// the part file, reproducing qBittorrent's unchecked-file case.
+	h.file_priority(0_file, dont_download);
+	h.flush_cache();
+	alert const* const flushed = wait_for_alert(ses, cache_flushed_alert::alert_type, "ses");
+	TEST_CHECK(flushed);
+	TEST_EQUAL(h.file_priority(0_file), dont_download);
+
+	// Restore the exact bytes under a different filename and remap the missing
+	// torrent file to it. This matches qBittorrent's Content rename/remap flow:
+	// the original path remains absent while the renamed target already exists.
+	std::string const replacement_name = "replacement";
+	std::string const replacement_path = combine_path(dir, replacement_name);
+	std::ofstream restored(replacement_path.c_str(), std::ios::binary);
 	TEST_CHECK(restored.good());
 	restored.write(original_data.data(), static_cast<std::streamsize>(original_data.size()));
 	restored.close();
+
+	h.rename_file(0_file, replacement_name);
+	alert const* const renamed = wait_for_alert(ses, file_renamed_alert::alert_type, "ses");
+	TEST_CHECK(renamed);
+	TEST_CHECK(!exists(file_path, ec));
+	TEST_CHECK(!ec);
+	TEST_CHECK(exists(replacement_path, ec));
+	TEST_CHECK(!ec);
+	TEST_EQUAL(h.file_priority(0_file), dont_download);
 
 	progress_completed.store(-2);
 	progress_total.store(-2);
@@ -142,6 +163,7 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	TEST_CHECK(progress_total.load() > 0);
 	TEST_EQUAL(progress_completed.load(), progress_total.load());
 	TEST_CHECK(h.is_valid());
+	TEST_EQUAL(h.file_priority(0_file), dont_download);
 
 	remove_all(dir, ec);
 }
