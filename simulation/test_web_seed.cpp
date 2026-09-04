@@ -308,6 +308,8 @@ TORRENT_TEST(multi_file_redirect_pad_files)
 	file_storage const& fs = params.ti->layout();
 
 	bool seeding = false;
+	bool hash_failure = false;
+	bool peer_error = false;
 
 	run_test(
 		[&params](lt::session& ses)
@@ -317,6 +319,10 @@ TORRENT_TEST(multi_file_redirect_pad_files)
 		[&](lt::session&, lt::alert const* alert) {
 			if (lt::alert_cast<lt::torrent_finished_alert>(alert))
 				seeding = true;
+			else if (lt::alert_cast<lt::hash_failed_alert>(alert))
+				hash_failure = true;
+			else if (lt::alert_cast<lt::peer_error_alert>(alert))
+				peer_error = true;
 		},
 		[&fs](sim::simulation& sim, lt::session&)
 		{
@@ -343,7 +349,10 @@ TORRENT_TEST(multi_file_redirect_pad_files)
 	);
 
 	TEST_EQUAL(seeding, true);
+	TEST_CHECK(!hash_failure);
+	TEST_CHECK(!peer_error);
 }
+
 // test that a web seed can redirect files to separate web servers (as long as
 // they are piece aligned)
 TORRENT_TEST(multi_file_redirect)
@@ -358,6 +367,8 @@ TORRENT_TEST(multi_file_redirect)
 	file_storage const& fs = params.ti->layout();
 
 	bool seeding = false;
+	bool hash_failure = false;
+	bool peer_error = false;
 
 	run_test(
 		[&params](lt::session& ses)
@@ -367,6 +378,10 @@ TORRENT_TEST(multi_file_redirect)
 		[&](lt::session&, lt::alert const* alert) {
 			if (lt::alert_cast<lt::torrent_finished_alert>(alert))
 				seeding = true;
+			else if (lt::alert_cast<lt::hash_failed_alert>(alert))
+				hash_failure = true;
+			else if (lt::alert_cast<lt::peer_error_alert>(alert))
+				peer_error = true;
 		},
 		[&fs](sim::simulation& sim, lt::session&)
 		{
@@ -393,6 +408,8 @@ TORRENT_TEST(multi_file_redirect)
 	);
 
 	TEST_EQUAL(seeding, true);
+	TEST_CHECK(!hash_failure);
+	TEST_CHECK(!peer_error);
 }
 
 // test web_seed redirect through proxy
@@ -408,6 +425,8 @@ TORRENT_TEST(multi_file_redirect_through_proxy)
 	file_storage const& fs = params.ti->layout();
 
 	bool seeding = false;
+	bool hash_failure = false;
+	bool peer_error = false;
 
 	run_test(
 		[&params](lt::session& ses)
@@ -428,6 +447,10 @@ TORRENT_TEST(multi_file_redirect_through_proxy)
 			if (lt::alert_cast<lt::torrent_finished_alert>(alert)) {
 				seeding = true;
 			}
+			else if (lt::alert_cast<lt::hash_failed_alert>(alert))
+				hash_failure = true;
+			else if (lt::alert_cast<lt::peer_error_alert>(alert))
+				peer_error = true;
 		},
 		[&fs](sim::simulation& sim, lt::session&)
 		{
@@ -457,6 +480,8 @@ TORRENT_TEST(multi_file_redirect_through_proxy)
 	);
 
 	TEST_EQUAL(seeding, true);
+	TEST_CHECK(!hash_failure);
+	TEST_CHECK(!peer_error);
 }
 
 using web_seed_proxy_flags_t = flags::bitfield_flag<std::uint32_t, struct web_seed_proxy_test_tag>;
@@ -582,6 +607,9 @@ TORRENT_TEST(multi_file_unaligned_redirect)
 
 	file_storage const& fs = params.ti->layout();
 
+	bool hash_failure = false;
+	bool peer_error = false;
+
 	run_test(
 		[&params](lt::session& ses)
 		{
@@ -590,6 +618,10 @@ TORRENT_TEST(multi_file_unaligned_redirect)
 		[&](lt::session&, lt::alert const* alert) {
 			// We don't expect to get this aslert
 			TEST_CHECK(lt::alert_cast<lt::torrent_finished_alert>(alert) == nullptr);
+			if (lt::alert_cast<lt::hash_failed_alert>(alert))
+				hash_failure = true;
+			else if (lt::alert_cast<lt::peer_error_alert>(alert))
+				peer_error = true;
 		},
 		[&fs](sim::simulation& sim, lt::session&)
 		{
@@ -614,6 +646,12 @@ TORRENT_TEST(multi_file_unaligned_redirect)
 			sim.run();
 		}
 	);
+
+	// the transfer never completes because the two files come from separate
+	// servers with no way to request the straddling piece, not because any
+	// piece fails its hash check
+	TEST_CHECK(!hash_failure);
+	TEST_CHECK(!peer_error);
 }
 
 // A web seed's credentials must keep being forwarded when redirected to the
