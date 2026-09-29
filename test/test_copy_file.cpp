@@ -9,6 +9,7 @@ see LICENSE file.
 
 #include "libtorrent/aux_/path.hpp"
 #include "libtorrent/error_code.hpp"
+#include "libtorrent/operations.hpp"
 #include "libtorrent/aux_/mmap.hpp"
 #include "libtorrent/aux_/open_mode.hpp"
 #include "libtorrent/aux_/storage_utils.hpp"
@@ -41,6 +42,14 @@ void write_file(std::string const& filename, int size)
 		v[std::size_t(i)] = char(i & 255);
 
 	std::ofstream(filename.c_str(), std::ios::binary).write(v.data(), std::streamsize(v.size()));
+}
+
+void print_copy_error(lt::storage_error const& ec)
+{
+	if (!ec)
+		return;
+	printf(
+		"copy_file failed: %s (%s)\n", ec.ec.message().c_str(), lt::operation_name(ec.operation));
 }
 
 bool compare_files(std::string const& file1, std::string const& file2)
@@ -95,11 +104,13 @@ TORRENT_TEST(basic)
 	lt::storage_error ec;
 	lt::aux::copy_file_buffer buf;
 	lt::aux::copy_file("basic-1", "basic-1.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(compare_files("basic-1", "basic-1.copy"));
 
 	write_file("basic-2", 1000000);
 	lt::aux::copy_file("basic-2", "basic-2.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(compare_files("basic-2", "basic-2.copy"));
 }
@@ -132,7 +143,8 @@ TORRENT_TEST(sparse_file)
 
 	// Find out if the filesystem we're running the test on supports sparse
 	// files. If not, we don't expect any of the files to be sparse
-	bool const supports_sparse_files = fs_supports_sparse_files();
+	filesystem_features const fs_features = query_filesystem_features();
+	bool const supports_sparse_files = fs_features.sparse_files;
 	printf("supports sparse files: %d\n", int(supports_sparse_files));
 
 	// make sure "sparse-1" is actually sparse
@@ -159,6 +171,7 @@ TORRENT_TEST(sparse_file)
 	lt::storage_error ec;
 	lt::aux::copy_file_buffer buf;
 	lt::aux::copy_file("sparse-1", "sparse-1.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 
 	// make sure the copy is sparse
@@ -179,7 +192,13 @@ TORRENT_TEST(sparse_file)
 #else
 	TEST_CHECK(::stat("sparse-1.copy", &st) == 0);
 	printf("copy_size: %d\n", int(st.st_blocks) * 512);
-	TEST_CHECK(st.st_blocks * 512 < 500'000);
+	// copy_file()'s sparse-preserving path needs SEEK_HOLE/SEEK_DATA or
+	// FIEMAP to locate holes; a filesystem can support sparse files (checked
+	// above) without supporting either (e.g. jfs)
+	if (fs_features.sparse_ranges_queryable)
+	{
+		TEST_CHECK(st.st_blocks * 512 < 500'000);
+	}
 #endif
 
 	TEST_CHECK(compare_files("sparse-1", "sparse-1.copy"));
@@ -189,7 +208,7 @@ TORRENT_TEST(sparse_file)
 #if TORRENT_HAVE_MMAP || TORRENT_HAVE_MAP_VIEW_OF_FILE
 TORRENT_TEST(sparse_file_trailing_hole)
 {
-	if (!fs_supports_sparse_files())
+	if (!query_filesystem_features().sparse_files)
 		return;
 
 	constexpr int size = 2'000'000;
@@ -198,13 +217,14 @@ TORRENT_TEST(sparse_file_trailing_hole)
 	lt::storage_error ec;
 	lt::aux::copy_file_buffer buf;
 	lt::aux::copy_file("sparse-trailing-hole", "sparse-trailing-hole.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(compare_files("sparse-trailing-hole", "sparse-trailing-hole.copy"));
 }
 
 TORRENT_TEST(sparse_file_all_hole)
 {
-	if (!fs_supports_sparse_files())
+	if (!query_filesystem_features().sparse_files)
 		return;
 
 	constexpr int size = 2'000'000;
@@ -213,13 +233,14 @@ TORRENT_TEST(sparse_file_all_hole)
 	lt::storage_error ec;
 	lt::aux::copy_file_buffer buf;
 	lt::aux::copy_file("sparse-all-hole", "sparse-all-hole.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(compare_files("sparse-all-hole", "sparse-all-hole.copy"));
 }
 
 TORRENT_TEST(sparse_file_replaces_longer_destination)
 {
-	if (!fs_supports_sparse_files())
+	if (!query_filesystem_features().sparse_files)
 		return;
 
 	constexpr int size = 2'000'000;
@@ -229,6 +250,7 @@ TORRENT_TEST(sparse_file_replaces_longer_destination)
 	lt::storage_error ec;
 	lt::aux::copy_file_buffer buf;
 	lt::aux::copy_file("sparse-replace", "sparse-replace.copy", ec, buf);
+	print_copy_error(ec);
 	TEST_CHECK(!ec);
 	TEST_CHECK(compare_files("sparse-replace", "sparse-replace.copy"));
 }
