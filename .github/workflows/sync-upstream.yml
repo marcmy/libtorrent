@@ -68,6 +68,13 @@ jobs:
               git checkout "$original_head" -- .github/workflows
             fi
 
+            # This fork intentionally carries a custom real-data checking
+            # benchmark. Keep that implementation fork-owned across upstream
+            # merges instead of trying to auto-resolve upstream edits to it.
+            if git cat-file -e "$original_head:tools/checking_benchmark.cpp" 2>/dev/null; then
+              git checkout "$original_head" -- tools/checking_benchmark.cpp
+            fi
+
             unresolved="$(git diff --name-only --diff-filter=U)"
             if [[ -n "$unresolved" ]]; then
               echo "::error::Unresolved upstream merge conflicts remain outside .github/workflows:"
@@ -83,6 +90,12 @@ jobs:
             if ! git diff --quiet "$original_head" -- .github/workflows; then
               echo "::error::Fork workflow files changed during the upstream merge."
               git diff "$original_head" -- .github/workflows
+              exit 1
+            fi
+
+            if ! git diff --quiet "$original_head" -- tools/checking_benchmark.cpp; then
+              echo "::error::Fork-owned checking benchmark changed during the upstream merge."
+              git diff "$original_head" -- tools/checking_benchmark.cpp
               exit 1
             fi
 
