@@ -50,7 +50,7 @@ jobs:
           cd tools
           b2 release warnings-as-errors=on stage
 
-      - uses: bencherdev/bencher@v0.6.12
+      - uses: bencherdev/bencher@v0.6.13
 
       - name: track benchmarks
         run: |
@@ -115,7 +115,7 @@ jobs:
           cd tools
           b2 release warnings-as-errors=on stage
 
-      - uses: bencherdev/bencher@v0.6.12
+      - uses: bencherdev/bencher@v0.6.13
 
       - name: track benchmarks
         run: |
