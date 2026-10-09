@@ -1,0 +1,103 @@
+name: Merge libtorrent upstream preserving fork regressions (temporary)
+on:
+  push:
+    branches:
+      - maintenance/libtorrent-resolve-2026-10
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Merge RC_2_1 and preserve all fork-owned additions
+        shell: bash
+        env:
+          EXPECTED_HEAD: "eb5f2531439682d24692e6e313145353eb6d70aa"
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          original_head="$(git rev-parse HEAD)"
+          if [[ "$original_head" != "$EXPECTED_HEAD" ]]; then
+            echo "::error::Fork head changed; aborting without pushing."
+            exit 1
+          fi
+          git remote add upstream https://github.com/arvidn/libtorrent.git
+          git fetch --no-tags upstream RC_2_1
+          git branch -f upstream/RC_2_1 FETCH_HEAD
+          if git merge-base --is-ancestor upstream/RC_2_1 HEAD; then
+            echo "Already up to date"
+            exit 0
+          fi
+
+          merge_status=0
+          git merge --no-commit --no-ff upstream/RC_2_1 || merge_status=$?
+          if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::Merge aborted without a resolvable state"
+            exit 1
+          fi
+          git rm -r -f --ignore-unmatch .github/workflows
+          git checkout "$original_head" -- .github/workflows
+          git checkout "$original_head" -- tools/checking_benchmark.cpp
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ "$unresolved" != "test/test_part_file.cpp" ]]; then
+            echo "::error::Expected exactly the previously investigated test conflict, got:"
+            printf '%s\n' "$unresolved"
+            exit 1
+          fi
+
+          export ORIGINAL_HEAD="$original_head"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          old_head = os.environ["ORIGINAL_HEAD"]
+          old = subprocess.check_output(
+              ["git", "show", f"{old_head}:test/test_part_file.cpp"], text=True
+          )
+          upstream = subprocess.check_output(
+              ["git", "show", "upstream/RC_2_1:test/test_part_file.cpp"], text=True
+          )
+          fork_marker = "TORRENT_TEST(part_file_live_delete_recreate)"
+          required = (
+              "TORRENT_TEST(part_file_missing_piece)",
+              "TORRENT_TEST(posix_part_file_missing_piece)",
+          )
+          if old.count(fork_marker) != 1 or fork_marker in upstream:
+              raise SystemExit("Unexpected fork-specific regression test layout")
+          if any(upstream.count(marker) != 1 for marker in required):
+              raise SystemExit("Unexpected upstream missing-piece tests layout")
+          extra = old[old.index(fork_marker):].strip("\n") + "\n"
+          merged = upstream.rstrip("\n") + "\n\n" + extra
+          dest = Path("test/test_part_file.cpp")
+          dest.write_text(merged)
+          print("Preserved both upstream missing-piece tests and fork delete/recreate test")
+          PY
+          git add test/test_part_file.cpp
+
+          remaining="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$remaining" ]]; then
+            echo "::error::Unresolved merge conflicts remain: $remaining"
+            exit 1
+          fi
+          if ! git diff --quiet "$original_head" -- .github/workflows; then
+            echo "::error::Fork workflow contents changed"
+            exit 1
+          fi
+          if ! git diff --quiet "$original_head" -- tools/checking_benchmark.cpp; then
+            echo "::error::Fork-owned benchmark changed"
+            exit 1
+          fi
+          git diff --check --cached
+          git commit --no-edit
+          git push origin HEAD:refs/heads/custom/qbittorrent-2.1
