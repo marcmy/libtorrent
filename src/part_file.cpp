@@ -201,7 +201,7 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		if (i == m_piece_map.end())
 		{
-			ec = make_error_code(boost::system::errc::no_such_file_or_directory);
+			ec.assign(errors::partfile_missing_piece, libtorrent_category());
 			return -1;
 		}
 
@@ -244,8 +244,7 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		if (i == m_piece_map.end())
 		{
-			ec = error_code(boost::system::errc::no_such_file_or_directory
-				, boost::system::generic_category());
+			ec.assign(errors::partfile_missing_piece, libtorrent_category());
 			return -1;
 		}
 
