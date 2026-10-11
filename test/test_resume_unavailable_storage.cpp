@@ -34,7 +34,7 @@ using namespace lt;
 namespace {
 
 void test_unavailable_storage(disk_io_constructor_type const& disk_io
-	, bool const blocked_path, bool const seed_mode)
+	, bool const blocked_path, bool const seed_mode, bool const force_recheck = false)
 {
 	std::string const save_path = aux::complete("offline-storage");
 	std::string const available_path = aux::complete("online-storage");
@@ -83,7 +83,7 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 	TEST_CHECK(state.errc);
 	TEST_CHECK(state.flags & torrent_flags::paused);
 	TEST_CHECK(!(state.flags & torrent_flags::auto_managed));
-	TEST_EQUAL(state.state, torrent_status::checking_resume_data);
+	TEST_EQUAL(state.state, torrent_status::checking_files);
 	TEST_EQUAL(state.total_payload_download, 0);
 
 	handle.save_resume_data(torrent_handle::save_info_dict);
@@ -118,6 +118,7 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 	}
 	aux::rename(available_path, save_path, ec);
 	TEST_CHECK(!ec);
+	if (force_recheck) handle.force_recheck();
 	handle.resume();
 	wait_for_seeding(ses, "restored storage");
 	state = handle.status();
@@ -142,4 +143,9 @@ TORRENT_TEST_DISK_IO(resume_inaccessible_directory)
 TORRENT_TEST_DISK_IO(resume_unavailable_seed_mode)
 {
 	test_unavailable_storage(disk_io, false, true);
+}
+
+TORRENT_TEST_DISK_IO(recheck_reconnected_storage)
+{
+	test_unavailable_storage(disk_io, false, false, true);
 }

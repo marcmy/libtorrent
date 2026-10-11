@@ -2296,6 +2296,8 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 					, error.ec, resolve_filename(error.file()), error.operation);
 			}
 
+			set_state(torrent_status::checking_files);
+
 			// A disk outage must not consume the original resume data or start
 			// a full check. Retain it for saving while offline and retrying once
 			// the storage is accessible again.
@@ -2531,6 +2533,9 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			|| m_state == torrent_status::checking_resume_data)
 			return;
 
+		// An explicit recheck replaces retained resume state with a full check.
+		// Prevent clear_error() from scheduling a resume-data retry as well.
+		if (m_add_torrent_params && has_error()) m_add_torrent_params.reset();
 		clear_error();
 
 		disconnect_all(errors::stopping_torrent, operation_t::bittorrent);
@@ -7695,7 +7700,7 @@ namespace {
 			if (m_seed_mode)
 				ret.verified_pieces = m_verified;
 		}
-		else if (m_add_torrent_params && state() == torrent_status::checking_resume_data)
+		else if (m_add_torrent_params && !m_files_checked)
 		{
 			ret.have_pieces = m_add_torrent_params->have_pieces;
 			ret.verified_pieces = m_add_torrent_params->verified_pieces;
@@ -9965,12 +9970,15 @@ namespace {
 
 		// if the error happened during initialization, try again now
 		if (!m_torrent_initialized && valid_metadata()) init();
-		else if (m_state == torrent_status::checking_resume_data && m_add_torrent_params)
+		else if (m_add_torrent_params
+			&& (m_state == torrent_status::checking_resume_data || m_state == torrent_status::checking_files))
 		{
 			// Discard cached missing-file results before retrying the retained
 			// resume data. Fence the release before the new verification job.
 			m_ses.disk_thread().async_release_files(m_storage);
+			set_state(torrent_status::checking_resume_data);
 			check_resume_data();
+			return;
 		}
 		if (!checking_files && should_check_files())
 			start_checking();
