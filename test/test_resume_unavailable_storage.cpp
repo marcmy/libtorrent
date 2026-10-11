@@ -57,6 +57,8 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 	params.save_path = save_path;
 	params.have_pieces.resize(params.ti->num_pieces(), true);
 	params.verified_pieces = params.have_pieces;
+	// The engine clamps completion times that precede the added time.
+	params.added_time = 123455;
 	params.completed_time = 123456;
 	params.flags &= ~(torrent_flags::paused | torrent_flags::auto_managed);
 	if (seed_mode) params.flags |= torrent_flags::seed_mode;
