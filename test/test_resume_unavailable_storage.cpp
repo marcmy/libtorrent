@@ -36,21 +36,21 @@ namespace {
 void test_unavailable_storage(disk_io_constructor_type const& disk_io
 	, bool const blocked_path, bool const seed_mode, bool const force_recheck = false)
 {
-	std::string const save_path = aux::complete("offline-storage");
-	std::string const available_path = aux::complete("online-storage");
+	std::string const save_path = lt::complete("offline-storage");
+	std::string const available_path = lt::complete("online-storage");
 	error_code ec;
-	aux::create_directory(save_path, ec);
+	lt::create_directory(save_path, ec);
 	TEST_CHECK(!ec);
 
 	int const piece_size = 16 * 1024;
 	std::vector<char> const data(2 * piece_size, 'x');
-	std::ofstream file(aux::combine_path(save_path, "seed.bin"), std::ios::binary);
+	std::ofstream file(lt::combine_path(save_path, "seed.bin"), std::ios::binary);
 	file.write(data.data(), data.size());
 	file.close();
 
 	std::vector<create_file_entry> files;
 	files.emplace_back("seed.bin", data.size());
-	create_torrent torrent(std::move(files), piece_size, create_torrent::v1_only);
+	lt::create_torrent torrent(std::move(files), piece_size, lt::create_torrent::v1_only);
 	sha1_hash const hash = hasher(span<char const>(data.data(), piece_size)).final();
 	for (auto const piece : torrent.piece_range()) torrent.set_hash(piece, hash);
 	add_torrent_params params = load_torrent_buffer(bencode(torrent.generate()));
@@ -63,7 +63,7 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 
 	// Disconnect the storage without deleting any torrent content. A blocked
 	// directory also exercises real access errors rather than just ENOENT.
-	aux::rename(save_path, available_path, ec);
+	lt::rename(save_path, available_path, ec);
 	TEST_CHECK(!ec);
 	if (blocked_path)
 	{
@@ -119,10 +119,10 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 
 	if (blocked_path)
 	{
-		aux::remove(save_path, ec);
+		lt::remove(save_path, ec);
 		TEST_CHECK(!ec);
 	}
-	aux::rename(available_path, save_path, ec);
+	lt::rename(available_path, save_path, ec);
 	TEST_CHECK(!ec);
 	if (force_recheck) handle.force_recheck();
 	handle.resume();

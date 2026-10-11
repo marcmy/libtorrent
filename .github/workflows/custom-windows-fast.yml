@@ -170,9 +170,13 @@ jobs:
       - name: Build and install
         run: |
           cmake --build build --target torrent-rasterbar --parallel
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent build failed" }
           cmake --build build --target checking_benchmark checking_io_benchmark --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
           cmake --build build --target test_resume_unavailable_storage test_storage --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Regression test build failed" }
           cmake --install build
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent install failed" }
 
       - name: Test offline storage and existing missing-file recovery
         run: |
