@@ -92,9 +92,15 @@ void test_unavailable_storage(disk_io_constructor_type const& disk_io
 	TEST_CHECK(saved_alert != nullptr);
 	if (!saved_alert) return;
 	add_torrent_params saved = read_resume_data(write_resume_data_buf(saved_alert->params));
-	TEST_EQUAL(saved.have_pieces.size(), params.have_pieces.size());
-	TEST_CHECK(saved.have_pieces.all_set());
-	TEST_CHECK(saved.verified_pieces.all_set());
+	// Resume format 2 packs bits into whole bytes; read_resume_data() retains
+	// padding bits until initialization clamps the map to the torrent size.
+	TEST_CHECK(saved.have_pieces.size() >= params.have_pieces.size());
+	TEST_CHECK(saved.verified_pieces.size() >= params.verified_pieces.size());
+	for (auto const piece : params.have_pieces.range())
+	{
+		TEST_CHECK(saved.have_pieces[piece]);
+		TEST_CHECK(saved.verified_pieces[piece]);
+	}
 	TEST_EQUAL(saved.completed_time, params.completed_time);
 
 	// Restart while the storage is still offline using the actual serialized
