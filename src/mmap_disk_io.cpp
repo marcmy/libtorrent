@@ -1126,6 +1126,8 @@ TORRENT_EXPORT std::unique_ptr<disk_interface> mmap_disk_io_constructor(
 		// order to set up the links (if present)
 		bool const verify_success = j->storage->verify_resume_data(*rd
 			, links ? *links : aux::vector<std::string, file_index_t>(), j->error);
+		if (j->error && j->error.ec.category() != libtorrent_category())
+			return disk_status::fatal_disk_error | ret_flag;
 
 		// j->error may have been set at this point, by verify_resume_data()
 		// it's important to not have it cleared out subsequent calls, as long

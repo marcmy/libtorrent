@@ -336,7 +336,11 @@ namespace {
 				bool const verify_success = st->verify_resume_data(*rd
 					, std::move(links), error);
 
-				if (!m_settings.get_bool(settings_pack::no_recheck_incomplete_resume))
+				if (error && error.ec.category() != libtorrent_category())
+				{
+					ret |= disk_status::fatal_disk_error;
+				}
+				else if (!m_settings.get_bool(settings_pack::no_recheck_incomplete_resume))
 				{
 					if (!aux::contains_resume_data(*rd))
 					{
