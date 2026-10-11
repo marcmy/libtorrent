@@ -472,7 +472,17 @@ std::int64_t get_filesize(stat_cache& stat, file_index_t const file_index
 	}
 	else
 	{
-		ec.ec = errors::mismatching_file_size;
+		// An unavailable save directory is not evidence that a completed file
+		// was deleted. In particular, an offline Windows share may report ENOENT.
+		// Keep the filesystem error so the disk backend stops instead of hashing
+		// absent files and replacing the saved piece map with an empty one.
+		error_code directory_error;
+		if (!fs.file_absolute_path(file_index)
+			&& !is_directory(save_path, directory_error))
+			ec.ec = directory_error ? directory_error
+				: boost::system::errc::make_error_code(boost::system::errc::not_a_directory);
+		else
+			ec.ec = errors::mismatching_file_size;
 		ec.file(file_index);
 		ec.operation = operation_t::file_stat;
 	}

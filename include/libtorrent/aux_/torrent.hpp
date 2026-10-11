@@ -436,6 +436,7 @@ namespace libtorrent::aux {
 		// this is called when the torrent has metadata.
 		// it will initialize the storage and the piece-picker
 		void init();
+		void check_resume_data();
 
 		void load_merkle_trees(aux::vector<std::vector<sha256_hash>, file_index_t> t
 			, aux::vector<bitfield, file_index_t> mask

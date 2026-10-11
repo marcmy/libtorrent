@@ -161,6 +161,7 @@ jobs:
             -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
             -DBUILD_SHARED_LIBS=OFF `
             -Dbuild_tools=ON `
+            -Dbuild_tests=ON `
             -Ddeprecated-functions=OFF `
             -Dstatic_runtime=OFF `
             -DVCPKG_TARGET_TRIPLET=${{ env.vcpkg_triplet }} `
@@ -169,8 +170,24 @@ jobs:
       - name: Build and install
         run: |
           cmake --build build --target torrent-rasterbar --parallel
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent build failed" }
           cmake --build build --target checking_benchmark checking_io_benchmark --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
+          cmake --build build --target test_resume_unavailable_storage test_storage --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Regression test build failed" }
           cmake --install build
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent install failed" }
+
+      - name: Test offline storage and existing missing-file recovery
+        run: |
+          ctest --test-dir build -R "^test_resume_unavailable_storage$" --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Offline storage regression failed" }
+          $resumeCase = & ./build/test/test_storage.exe --list |
+            Select-String 'fastresume_spanning_piece_missing_file$' |
+            ForEach-Object { $_.Line.Trim().Substring(2) }
+          if (!$resumeCase) { throw "Missing-file resume test was not registered" }
+          & ./build/test/test_storage.exe $resumeCase
+          if ($LASTEXITCODE -ne 0) { throw "Missing-file resume regression failed" }
 
       - name: Show sccache stats
         if: always()
