@@ -1276,6 +1276,7 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			// unlock the piece and restore it, as if no block was
 			// ever downloaded for it.
 			m_picker->restore_piece(piece);
+			mark_queued_blocks_downloading(piece, {});
 		}
 
 		update_gauge();
@@ -5337,8 +5338,16 @@ namespace {
 		// and mark it as being interesting for download
 		TORRENT_ASSERT(!m_picker->have_piece(piece));
 
-		// loop over all peers and re-request potential duplicate
-		// blocks to this piece
+		mark_queued_blocks_downloading(piece, blocks);
+	}
+	catch (...)
+	{
+		handle_exception();
+	}
+
+	void torrent::mark_queued_blocks_downloading(
+		piece_index_t const piece, span<int const> const blocks)
+	{
 		for (auto* p : m_connections)
 		{
 			TORRENT_INCREMENT(m_iterating_connections);
@@ -5363,7 +5372,6 @@ namespace {
 			}
 		}
 	}
-	catch (...) { handle_exception(); }
 
 	void torrent::peer_has(piece_index_t const index, peer_connection const* peer)
 	{
