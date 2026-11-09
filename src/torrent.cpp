@@ -10169,9 +10169,9 @@ namespace {
 		enum flags
 		{
 			seed_ratio_not_met = 0x40000000,
-			no_seeds           = 0x20000000,
-			recently_started   = 0x10000000,
-			prio_mask          = 0x0fffffff
+			recently_started = 0x20000000,
+			no_seeds = 0x10000000,
+			prio_mask = 0x0fffffff
 		};
 
 		if (!is_finished()) return 0;
@@ -10190,16 +10190,21 @@ namespace {
 		// flag. That will make this seed prioritized
 		// downloaded may be 0 if the torrent is 0-sized
 		std::int64_t const downloaded = std::max(m_total_downloaded, m_torrent_file->total_size());
+		// the seed time limit may be set high enough for the product to
+		// overflow 32 bits
 		if (fin_time < seconds(s.get_int(settings_pack::seed_time_limit))
 			&& (download_time.count() > 1
-				&& fin_time * 100 / download_time < s.get_int(settings_pack::seed_time_ratio_limit))
+				&& std::int64_t(fin_time.count()) * 100 / download_time.count()
+					< s.get_int(settings_pack::seed_time_ratio_limit))
 			&& downloaded > 0
 			&& m_total_uploaded * 100 / downloaded < s.get_int(settings_pack::share_ratio_limit))
 			ret |= seed_ratio_not_met;
 
-		// if this torrent is running, and it was started less
-		// than 30 minutes ago, give it priority, to avoid oscillation
-		if (!is_paused() && act_time < minutes(30))
+		// a torrent resumed less than 30 minutes ago keeps its slot, to avoid
+		// oscillation and to give it time to be classified as inactive (see
+		// dont_count_slow_torrents). This outranks no_seeds, since queued
+		// torrents without scrape data look like they have no seeds
+		if (!is_paused() && m_active_timer.live_for(now) < minutes(30))
 			ret |= recently_started;
 
 		// if we have any scrape data, use it to calculate
@@ -10224,7 +10229,10 @@ namespace {
 		}
 		else
 		{
-			ret |= ((1 + downloaders) * scale / seeds) & prio_mask;
+			// the scrape counters are 24 bits wide, so the product does not
+			// fit in an int
+			ret |= int(
+				std::min(std::int64_t(prio_mask), (1 + std::int64_t(downloaders)) * scale / seeds));
 		}
 
 		return ret;
