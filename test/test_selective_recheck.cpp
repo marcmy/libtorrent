@@ -9,6 +9,7 @@ see LICENSE file.
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <thread>
@@ -164,6 +165,75 @@ TORRENT_TEST(selective_recheck_missing_seed_file)
 	TEST_EQUAL(progress_completed.load(), progress_total.load());
 	TEST_CHECK(h.is_valid());
 	TEST_EQUAL(h.file_priority(0_file), dont_download);
+
+	remove_all(dir, ec);
+}
+
+// A seeded file is deleted and then unselected before a selective recheck.
+// Storage then reads that file from the part file, which has no data for it.
+// The missing part-file piece must invalidate the piece, not error the torrent.
+TORRENT_TEST(selective_recheck_missing_skipped_file)
+{
+	char const* const dir = "tmp_selective_recheck_skipped";
+	error_code ec;
+	remove_all(dir, ec);
+	create_directory(dir, ec);
+	TEST_CHECK(!ec);
+
+	std::string const file_path = combine_path(dir, "temporary");
+	std::ofstream file(file_path.c_str(), std::ios::binary);
+	TEST_CHECK(file.good());
+
+	auto p = ::create_torrent(&file, "temporary", 16 * 1024, 4, false
+		, create_torrent::v1_only);
+	file.close();
+
+	settings_pack pack = settings();
+	pack.set_str(settings_pack::listen_interfaces, test_listen_interface());
+	pack.set_int(settings_pack::max_retry_port_bind, 10);
+	pack.set_bool(settings_pack::enable_dht, false);
+	pack.set_bool(settings_pack::enable_lsd, false);
+	pack.set_bool(settings_pack::enable_upnp, false);
+	pack.set_bool(settings_pack::enable_natpmp, false);
+	lt::session ses(pack);
+
+	p.save_path = dir;
+	p.flags |= torrent_flags::paused;
+	p.flags &= ~torrent_flags::auto_managed;
+	p.flags |= torrent_flags::seed_mode;
+	torrent_handle h = ses.add_torrent(std::move(p), ec);
+	TEST_CHECK(!ec);
+	TEST_CHECK(h.is_valid());
+	TEST_CHECK(h.have_piece(0_piece));
+
+	remove(file_path, ec);
+	TEST_CHECK(!ec);
+
+	h.file_priority(0_file, dont_download);
+	h.flush_cache();
+	alert const* const flushed = wait_for_alert(ses, cache_flushed_alert::alert_type, "ses");
+	TEST_CHECK(flushed);
+	TEST_EQUAL(h.file_priority(0_file), dont_download);
+
+	std::atomic<int> progress_completed{-2};
+	std::atomic<int> progress_total{-2};
+	h.recheck_files({0_file}, [&](int const completed, int const total)
+	{
+		progress_completed.store(completed);
+		progress_total.store(total);
+	});
+
+	for (int i = 0; i < 200
+		&& (progress_total.load() <= 0 || progress_completed.load() != progress_total.load()); ++i)
+		std::this_thread::sleep_for(10ms);
+
+	TEST_CHECK(progress_total.load() > 0);
+	TEST_EQUAL(progress_completed.load(), progress_total.load());
+	TEST_CHECK(!h.have_piece(0_piece));
+
+	torrent_status const st = h.status();
+	TEST_CHECK(!st.errc);
+	if (st.errc) std::printf("unexpected torrent error: %s\n", st.errc.message().c_str());
 
 	remove_all(dir, ec);
 }
