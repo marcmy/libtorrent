@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     outputs:
       changed: ${{ steps.sync.outputs.changed }}
       head_sha: ${{ steps.sync.outputs.head_sha }}
@@ -77,9 +78,15 @@ jobs:
 
             unresolved="$(git diff --name-only --diff-filter=U)"
             if [[ -n "$unresolved" ]]; then
-              echo "::error::Unresolved upstream merge conflicts remain outside .github/workflows:"
+              echo "::warning::Unresolved upstream merge conflicts remain; opening a pull request to resolve them:"
               printf '%s\n' "$unresolved"
-              exit 1
+              git merge --abort || git reset -q --hard "$original_head"
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              echo "base_sha=$original_head" >> "$GITHUB_OUTPUT"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+              echo "head_sha=$original_head" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
 
             if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
@@ -106,6 +113,19 @@ jobs:
 
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open conflict pull request
+        if: steps.sync.outputs.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORK_BRANCH: custom/qbittorrent-2.1
+          BASE_SHA: ${{ steps.sync.outputs.base_sha }}
+          UPSTREAM_REF: source/RC_2_1
+          UPSTREAM_NAME: arvidn/libtorrent@RC_2_1
+          KEEP_FORK_PATHS: .github/workflows tools/checking_benchmark.cpp
+        run: bash .github/scripts/sync-conflict-pr.sh
 
       - name: Summarize libtorrent sync
         env:
