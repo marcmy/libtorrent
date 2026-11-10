@@ -940,6 +940,9 @@ namespace libtorrent {
 						if (error.ec == boost::system::errc::no_such_file_or_directory
 							|| error.ec == boost::asio::error::eof
 							|| error.ec == lt::errors::file_too_short
+							// a deleted file that is no longer selected is read
+							// from the part file, which has no data for it
+							|| error.ec == lt::errors::partfile_missing_piece
 #ifdef TORRENT_WINDOWS
 							|| error.ec == error_code(ERROR_HANDLE_EOF, system_category())
 #endif
