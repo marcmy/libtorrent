@@ -173,7 +173,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "libtorrent build failed" }
           cmake --build build --target checking_benchmark checking_io_benchmark --parallel
           if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
-          cmake --build build --target test_resume_unavailable_storage test_storage --parallel
+          cmake --build build --target test_resume_unavailable_storage test_storage test_selective_recheck --parallel
           if ($LASTEXITCODE -ne 0) { throw "Regression test build failed" }
           cmake --install build
           if ($LASTEXITCODE -ne 0) { throw "libtorrent install failed" }
@@ -188,6 +188,11 @@ jobs:
           if (!$resumeCase) { throw "Missing-file resume test was not registered" }
           & ./build/test/test_storage.exe $resumeCase
           if ($LASTEXITCODE -ne 0) { throw "Missing-file resume regression failed" }
+
+      - name: Test selective file recheck
+        run: |
+          ctest --test-dir build -R "^test_selective_recheck$" --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Selective recheck regression failed" }
 
       - name: Show sccache stats
         if: always()
