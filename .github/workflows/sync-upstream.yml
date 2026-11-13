@@ -20,6 +20,7 @@ jobs:
   sync:
     name: Merge libtorrent RC_2_1
     runs-on: ubuntu-latest
+    environment: upstream-sync
     permissions:
       contents: write
       pull-requests: write
