@@ -8126,6 +8126,12 @@ namespace {
 
 	bool torrent::connect_to_peer(torrent_peer* peerinfo, bool const ignore_limit)
 	{
+		return connect_to_peer(peerinfo, peerinfo->ip(), ignore_limit);
+	}
+
+	bool torrent::connect_to_peer(
+		torrent_peer* peerinfo, tcp::endpoint const& target, bool const ignore_limit)
+	{
 		TORRENT_ASSERT(is_single_thread());
 		INVARIANT_CHECK;
 		TORRENT_UNUSED(ignore_limit);
@@ -8153,10 +8159,9 @@ namespace {
 		)
 		{
 			// this asserts that we don't have duplicates in the peer_list's peer list
-			peer_iterator i_ = std::find_if(m_connections.begin(), m_connections.end()
-				, [peerinfo] (peer_connection const* p)
-				{
-					return !p->is_disconnecting() && p->remote() == peerinfo->ip();
+			peer_iterator i_ = std::find_if(
+				m_connections.begin(), m_connections.end(), [&target](peer_connection const* p) {
+					return !p->is_disconnecting() && p->remote() == target;
 				});
 
 			TORRENT_ASSERT(i_ == m_connections.end()
@@ -8168,7 +8173,7 @@ namespace {
 		TORRENT_ASSERT(m_ses.num_connections()
 			< settings().get_int(settings_pack::connections_limit) || ignore_limit);
 
-		tcp::endpoint a(peerinfo->ip());
+		TORRENT_ASSERT(target.address() == peerinfo->address());
 		TORRENT_ASSERT(!m_apply_ip_filter
 			|| !m_ip_filter
 			|| (m_ip_filter->access(peerinfo->address()) & ip_filter::blocked) == 0);
@@ -8273,7 +8278,7 @@ namespace {
 		}
 		}();
 
-		if(!create_peer_connection(peerinfo, std::move(s), std::move(a)))
+		if (!create_peer_connection(peerinfo, std::move(s), target))
 			return false;
 
 		return peerinfo->connection != nullptr;
