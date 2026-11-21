@@ -1,0 +1,159 @@
+name: Sync upstream chain
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths:
+      - .github/workflows/sync-upstream.yml
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge libtorrent RC_2_1
+    runs-on: ubuntu-latest
+    environment: upstream-sync
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      head_sha: ${{ steps.sync.outputs.head_sha }}
+      source_sha: ${{ steps.sync.outputs.source_sha }}
+
+    steps:
+      - name: Check out custom libtorrent branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: custom/qbittorrent-2.1
+          fetch-depth: 0
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Fetch upstream libtorrent RC_2_1
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add source https://github.com/arvidn/libtorrent.git
+          git fetch --prune --no-tags source RC_2_1
+
+      - name: Merge upstream while preserving fork workflows
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git rev-parse source/RC_2_1)"
+          original_head="$(git rev-parse HEAD)"
+
+          if git merge-base --is-ancestor source/RC_2_1 HEAD; then
+            echo "custom/qbittorrent-2.1 already contains current upstream RC_2_1."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            merge_status=0
+            git merge --no-commit --no-ff source/RC_2_1 || merge_status=$?
+
+            # Replace the entire workflow directory with the exact tree from
+            # the fork before the merge. This prevents upstream workflow-file
+            # changes from requiring a token with workflow scope or launching
+            # unrelated upstream CI in the fork.
+            git rm -r -f --ignore-unmatch .github/workflows
+            if git cat-file -e "$original_head:.github/workflows" 2>/dev/null; then
+              git checkout "$original_head" -- .github/workflows
+            fi
+
+            # This fork intentionally carries a custom real-data checking
+            # benchmark. Keep that implementation fork-owned across upstream
+            # merges instead of trying to auto-resolve upstream edits to it.
+            if git cat-file -e "$original_head:tools/checking_benchmark.cpp" 2>/dev/null; then
+              git checkout "$original_head" -- tools/checking_benchmark.cpp
+            fi
+
+            unresolved="$(git diff --name-only --diff-filter=U)"
+            if [[ -n "$unresolved" ]]; then
+              echo "::warning::Unresolved upstream merge conflicts remain; opening a pull request to resolve them:"
+              printf '%s\n' "$unresolved"
+              git merge --abort || git reset -q --hard "$original_head"
+              echo "conflict=true" >> "$GITHUB_OUTPUT"
+              echo "base_sha=$original_head" >> "$GITHUB_OUTPUT"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+              echo "head_sha=$original_head" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "::error::git merge failed without creating a resolvable merge state."
+              exit "$merge_status"
+            fi
+
+            if ! git diff --quiet "$original_head" -- .github/workflows; then
+              echo "::error::Fork workflow files changed during the upstream merge."
+              git diff "$original_head" -- .github/workflows
+              exit 1
+            fi
+
+            if ! git diff --quiet "$original_head" -- tools/checking_benchmark.cpp; then
+              echo "::error::Fork-owned checking benchmark changed during the upstream merge."
+              git diff "$original_head" -- tools/checking_benchmark.cpp
+              exit 1
+            fi
+
+            git commit --no-edit
+            git push origin HEAD:refs/heads/custom/qbittorrent-2.1
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open conflict pull request
+        if: steps.sync.outputs.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORK_BRANCH: custom/qbittorrent-2.1
+          BASE_SHA: ${{ steps.sync.outputs.base_sha }}
+          UPSTREAM_REF: source/RC_2_1
+          UPSTREAM_NAME: arvidn/libtorrent@RC_2_1
+          KEEP_FORK_PATHS: .github/workflows tools/checking_benchmark.cpp
+        run: bash .github/scripts/sync-conflict-pr.sh
+
+      - name: Summarize libtorrent sync
+        env:
+          SOURCE_HEAD: ${{ steps.sync.outputs.source_sha }}
+          CUSTOM_CHANGED: ${{ steps.sync.outputs.changed }}
+          CUSTOM_HEAD: ${{ steps.sync.outputs.head_sha }}
+        run: |
+          {
+            echo "## libtorrent upstream sync"
+            echo "- Upstream RC_2_1 head: $SOURCE_HEAD"
+            echo "- Custom branch changed: $CUSTOM_CHANGED"
+            echo "- Custom branch head: $CUSTOM_HEAD"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch-qbittorrent:
+    name: Trigger qBittorrent upstream sync
+    needs: sync
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch qBittorrent sync
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-upstream-synced
+          client-payload: >-
+            {"libtorrent_sha":"${{ needs.sync.outputs.head_sha }}","libtorrent_changed":"${{ needs.sync.outputs.changed }}"}

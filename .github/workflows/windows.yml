@@ -33,7 +33,7 @@ jobs:
       steps:
 
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: true
            fetch-depth: 1
@@ -80,7 +80,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: true
            fetch-depth: 1
@@ -140,7 +140,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: true
            fetch-depth: 1
@@ -185,7 +185,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: recursive
            fetch-depth: 1
@@ -237,7 +237,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: true
            fetch-depth: 1
@@ -279,7 +279,7 @@ jobs:
 
       steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
            submodules: recursive
            fetch-depth: 1

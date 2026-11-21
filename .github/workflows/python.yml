@@ -29,13 +29,13 @@ jobs:
             python-version: "3.12"
           - os: ubuntu-24.04-arm
             python-version: "3.12"
-          - os: macos-15
+          - os: macos-14
             python-version: "3.14"
           - os: windows-2022
             python-version: 3.9
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
         fetch-depth: 1
@@ -60,19 +60,14 @@ jobs:
     - name: dependencies (MacOS)
       if: runner.os == 'macOS'
       run: |
-        brew install boost-build boost boost-python3 openssl@3 python-setuptools
-        # boost-python3 is built against a single python version, the
-        # bindings must be built with that same interpreter to link
-        PY_VER=$(brew deps --direct boost-python3 | sed -n 's/^python@//p')
-        brew install python@$PY_VER
-        echo "PY_VER=$PY_VER" >>"$GITHUB_ENV"
+        brew install boost-build boost boost-python3 python@3.14 openssl@3 python-setuptools
+        export PATH=$(brew --prefix)/opt/python@3.14/bin:$PATH
 
     - name: update package lists (linux)
       if: runner.os == 'Linux'
       continue-on-error: true
-      timeout-minutes: 5
       run: |
-        sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update
+        sudo apt update
 
     - uses: Chocobo1/setup-ccache-action@v1
       if: runner.os != 'Windows'
@@ -85,14 +80,14 @@ jobs:
     - name: dependencies (linux)
       if: runner.os == 'Linux'
       run: |
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libboost-tools-dev libboost-python-dev libboost-dev libboost-system-dev libboost-json-dev python3 python3-setuptools libssl-dev
+        sudo apt install libboost-tools-dev libboost-python-dev libboost-dev libboost-system-dev libboost-json-dev python3 python3-setuptools libssl-dev
 
     - name: dependencies (windows)
       if: runner.os == 'Windows'
       run: |
         python -m pip install --upgrade setuptools
 
-    - name: install openssl (windows)
+    - name: install openssl:x64-windows-static (windows)
       if: runner.os == 'Windows'
       uses: ./.github/actions/win_install_openssl
       with:
@@ -147,8 +142,5 @@ jobs:
       run: |
         # Exporting SYSTEM_VERSION_COMPAT=0 helps pip allow install macos 11 tagged wheels. Ref https://github.com/pypa/packaging/issues/497
         export SYSTEM_VERSION_COMPAT=0
-        # tox builds its env from the interpreter it runs under, so run it
-        # from brew's python, the one boost-python3 is linked against
-        "$(brew --prefix)/opt/python@$PY_VER/bin/python3" -m venv "$RUNNER_TEMP/tox"
-        "$RUNNER_TEMP/tox/bin/python" -m pip install tox
-        "$RUNNER_TEMP/tox/bin/tox" -e py
+        export PYTHON_INTERPRETER=$(brew --prefix)/opt/python@3.14/bin/python3
+        tox -e py

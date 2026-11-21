@@ -1,0 +1,252 @@
+name: Custom Windows Fast Build
+
+on:
+  push:
+    branches:
+      - custom/qbittorrent-2.1
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "bindings/python/**"
+      - ".github/**"
+  pull_request:
+    branches:
+      - custom/qbittorrent-2.1
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "bindings/python/**"
+      - ".github/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-windows-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build custom libtorrent (x64)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: write
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      boost_path: "${{ github.workspace }}/.ci-cache/boost"
+      vcpkg_binary_cache: "${{ github.workspace }}/.ci-cache/vcpkg-binary-cache"
+      vcpkg_path: "c:/vcpkg"
+      target_arch: "x64"
+      vcpkg_triplet: "x64-windows-static-md-release"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+
+    steps:
+      - name: Checkout libtorrent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup devcmd
+        uses: TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9 # v4.1.0
+        with:
+          arch: ${{ env.target_arch }}
+
+      - name: Install Ninja
+        run: |
+          if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
+          {
+            choco install ninja
+          }
+          ninja --version
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.17.0"
+
+      - name: Record vcpkg revision
+        id: vcpkg-revision
+        run: |
+          $sha = git -C "${{ env.vcpkg_path }}" rev-parse HEAD
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.vcpkg_binary_cache }}
+          key: vcpkg-binaries-${{ runner.os }}-${{ env.vcpkg_triplet }}-${{ steps.vcpkg-revision.outputs.sha }}
+          restore-keys: |
+            vcpkg-binaries-${{ runner.os }}-${{ env.vcpkg_triplet }}-
+
+      - name: Configure vcpkg triplet
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ env.vcpkg_binary_cache }}" | Out-Null
+          New-Item `
+            -Force `
+            -ItemType File `
+            -Path "${{ env.vcpkg_path }}/triplets_overlay/${{ env.vcpkg_triplet }}.cmake"
+          Add-Content `
+            -Path "${{ env.vcpkg_path }}/triplets_overlay/${{ env.vcpkg_triplet }}.cmake" `
+            -Value @("set(VCPKG_TARGET_ARCHITECTURE ${{ env.target_arch }})",
+              "set(VCPKG_LIBRARY_LINKAGE static)",
+              "set(VCPKG_CRT_LINKAGE dynamic)",
+              "set(VCPKG_BUILD_TYPE release)")
+
+          $packages = `
+            "boost-build:${{ env.vcpkg_triplet }}",
+            "openssl:${{ env.vcpkg_triplet }}",
+            "zlib:${{ env.vcpkg_triplet }}"
+          ${{ env.vcpkg_path }}/vcpkg.exe install `
+            --binarysource="clear;files,${{ env.vcpkg_binary_cache }},readwrite" `
+            --clean-after-build `
+            --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" `
+            $packages
+
+      - name: Cache Boost headers
+        id: boost-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.boost_path }}
+          key: boost-windows-msvc-1.91.0
+
+      - name: Install Boost headers
+        if: steps.boost-cache.outputs.cache-hit != 'true'
+        env:
+          boost_version: "1.91.0"
+          boost_archive_version: "1_91_0"
+        run: |
+          $boostUrl = "https://archives.boost.io/release/${{ env.boost_version }}/source/boost_${{ env.boost_archive_version }}.tar.gz"
+          $fallbackUrl = "https://sourceforge.net/projects/boost/files/boost/${{ env.boost_version }}/boost_${{ env.boost_archive_version }}.tar.gz"
+          curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boostUrl"
+          tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
+          if ($LastExitCode -ne 0)
+          {
+            curl -L -o "${{ runner.temp }}/boost.tar.gz" "$fallbackUrl"
+            tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
+          }
+          move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
+          cd "${{ env.boost_path }}"
+          ${{ env.vcpkg_path }}/installed/${{ env.vcpkg_triplet }}/tools/boost-build/b2.exe `
+            stage `
+            toolset=msvc `
+            --stagedir=.\ `
+            --with-headers
+
+      - name: Configure
+        run: |
+          $env:CFLAGS += " /guard:cf"
+          $env:CXXFLAGS += " /guard:cf"
+          $env:LDFLAGS += " /GUARD:CF"
+          cmake `
+            -B build `
+            -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_CXX_STANDARD=20 `
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" `
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded `
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW `
+            -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -Dbuild_tools=ON `
+            -Dbuild_tests=ON `
+            -Ddeprecated-functions=OFF `
+            -Dstatic_runtime=OFF `
+            -DVCPKG_TARGET_TRIPLET=${{ env.vcpkg_triplet }} `
+            -Dwebtorrent=ON
+
+      - name: Build and install
+        run: |
+          cmake --build build --target torrent-rasterbar --parallel
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent build failed" }
+          cmake --build build --target checking_benchmark checking_io_benchmark --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
+          cmake --build build --target test_resume_unavailable_storage test_storage test_selective_recheck --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Regression test build failed" }
+          cmake --install build
+          if ($LASTEXITCODE -ne 0) { throw "libtorrent install failed" }
+
+      - name: Test offline storage and existing missing-file recovery
+        run: |
+          ctest --test-dir build -R "^test_resume_unavailable_storage$" --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Offline storage regression failed" }
+          $resumeCase = & ./build/test/test_storage.exe --list |
+            Select-String 'fastresume_spanning_piece_missing_file$' |
+            ForEach-Object { $_.Line.Trim().Substring(2) }
+          if (!$resumeCase) { throw "Missing-file resume test was not registered" }
+          & ./build/test/test_storage.exe $resumeCase
+          if ($LASTEXITCODE -ne 0) { throw "Missing-file resume regression failed" }
+
+      - name: Test selective file recheck
+        run: |
+          ctest --test-dir build -R "^test_selective_recheck$" --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Selective recheck regression failed" }
+
+      - name: Show sccache stats
+        if: always()
+        continue-on-error: true
+        run: sccache --show-stats
+
+      - name: Upload custom libtorrent
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libtorrent-custom-windows-x64-${{ github.sha }}
+          path: |
+            install
+            build/compile_commands.json
+            build/tools/checking_benchmark.exe
+            build/tools/checking_benchmark.pdb
+            build/tools/checking_io_benchmark.exe
+            build/tools/checking_io_benchmark.pdb
+            tools/run_checking_matrix.ps1
+
+  dispatch-qbittorrent:
+    name: Trigger qBittorrent build
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch qBittorrent sync
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-upstream-synced
+          client-payload: >-
+            {"libtorrent_sha":"${{ github.sha }}","libtorrent_changed":"true"}
+
+  dispatch-qbittorrent-pr:
+    name: Trigger qBittorrent PR validation
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.build.result == 'success' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    environment: qbittorrent-sync
+    permissions: {}
+
+    steps:
+      - name: Dispatch exact libtorrent PR revision
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.QBITTORRENT_SYNC_TOKEN }}
+          repository: marcmy/qBittorrent
+          event-type: libtorrent-pr-build
+          client-payload: >-
+            {"libtorrent_sha":"${{ github.event.pull_request.head.sha }}","libtorrent_changed":"true"}
