@@ -1158,6 +1158,41 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		}
 	}
 
+	void torrent::partfile_read_failed(piece_index_t const piece)
+	{
+		if (m_abort || !valid_metadata()
+			|| piece < piece_index_t{0}
+			|| piece >= m_torrent_file->end_piece())
+			return;
+
+		bool const was_finished = is_finished();
+
+		// Materialize the full ownership map before dropping m_have_all,
+		// then remove this piece from picker and file-progress together.
+		if (m_seed_mode) leave_seed_mode(seed_mode_t::skip_checking);
+		need_picker();
+		if (!m_picker->have_piece(piece)) return;
+
+		m_file_progress.lost_piece(m_torrent_file->layout(), piece);
+		m_picker->we_dont_have(piece);
+		set_have_all(false);
+
+		// m_state == seeding makes is_seed() true by itself. Once an owned
+		// piece is invalidated, leave that state before the normal finished ->
+		// downloading transition logic runs.
+		if (m_state == torrent_status::seeding)
+			set_state(m_picker->is_finished()
+				? torrent_status::finished
+				: torrent_status::downloading);
+
+		update_gauge();
+
+		set_need_save_resume(torrent_handle::if_download_progress);
+		update_peer_interest(was_finished);
+		state_updated();
+		update_want_peers();
+	}
+
 	void torrent::handle_disk_error(string_view job_name
 		, storage_error const& error
 		, peer_connection* c
@@ -1369,11 +1404,9 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 
 		INVARIANT_CHECK;
 
-		// if we have all pieces we should not have a picker
-		// unless we're in suggest mode
-		TORRENT_ASSERT(!m_have_all
-			|| settings().get_int(settings_pack::suggest_mode)
-			== settings_pack::suggest_read_cache);
+		// m_have_all may be materialized into a picker temporarily when a
+		// previously-owned piece must be invalidated (e.g. selective recheck).
+		// pp->we_have_all() below preserves every unrelated piece.
 
 		auto pp = std::make_unique<piece_picker>(m_torrent_file->total_size()
 			, m_torrent_file->piece_length());
@@ -2149,7 +2182,19 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		}
 
 		set_state(torrent_status::checking_resume_data);
+		check_resume_data();
 
+		update_want_peers();
+		update_want_tick();
+
+		// this will remove the piece picker, if we're done with it
+		maybe_done_flushing();
+
+		m_torrent_initialized = true;
+	}
+
+	void torrent::check_resume_data()
+	{
 		aux::vector<std::string, file_index_t> links;
 #ifndef TORRENT_DISABLE_MUTABLE_TORRENTS
 		if (!m_torrent_file->similar_torrents().empty()
@@ -2210,14 +2255,6 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		{
 			on_resume_data_checked({}, storage_error{});
 		}
-
-		update_want_peers();
-		update_want_tick();
-
-		// this will remove the piece picker, if we're done with it
-		maybe_done_flushing();
-
-		m_torrent_initialized = true;
 	}
 
 	bt_peer_connection* torrent::find_introducer(tcp::endpoint const& ep) const
@@ -2294,6 +2331,21 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			handle_disk_error("check_resume_data", error);
 			auto_managed(false);
 			pause();
+			if (m_add_torrent_params
+				&& aux::contains_resume_data(*m_add_torrent_params)
+				&& m_ses.alerts().should_post<fastresume_rejected_alert>())
+			{
+				m_ses.alerts().emplace_alert<fastresume_rejected_alert>(get_handle()
+					, error.ec, resolve_filename(error.file()), error.operation);
+			}
+
+			set_state(torrent_status::checking_files);
+
+			// A disk outage must not consume the original resume data or start
+			// a full check. Retain it for saving while offline and retrying once
+			// the storage is accessible again.
+			m_need_save_resume_data = need_save_resume_data;
+			return;
 		}
 
 		state_updated();
@@ -2524,6 +2576,9 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 			|| m_state == torrent_status::checking_resume_data)
 			return;
 
+		// An explicit recheck replaces retained resume state with a full check.
+		// Prevent clear_error() from scheduling a resume-data retry as well.
+		if (m_add_torrent_params && has_error()) m_add_torrent_params.reset();
 		clear_error();
 
 		disconnect_all(errors::stopping_torrent, operation_t::bittorrent);
@@ -7764,6 +7819,12 @@ namespace {
 			if (m_seed_mode)
 				ret.verified_pieces = m_verified;
 		}
+		else if (m_add_torrent_params && !m_files_checked)
+		{
+			ret.have_pieces = m_add_torrent_params->have_pieces;
+			ret.verified_pieces = m_add_torrent_params->verified_pieces;
+			ret.unfinished_pieces = m_add_torrent_params->unfinished_pieces;
+		}
 
 		// write renamed files
 		if (valid_metadata())
@@ -10033,6 +10094,16 @@ namespace {
 
 		// if the error happened during initialization, try again now
 		if (!m_torrent_initialized && valid_metadata()) init();
+		else if (m_add_torrent_params
+			&& (m_state == torrent_status::checking_resume_data || m_state == torrent_status::checking_files))
+		{
+			// Discard cached missing-file results before retrying the retained
+			// resume data. Fence the release before the new verification job.
+			m_ses.disk_thread().async_release_files(m_storage);
+			set_state(torrent_status::checking_resume_data);
+			check_resume_data();
+			return;
+		}
 		if (!checking_files && should_check_files())
 			start_checking();
 	}

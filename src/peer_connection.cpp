@@ -5705,6 +5705,23 @@ namespace {
 				return;
 			}
 
+			bool const missing_partfile = error.operation == operation_t::partfile_read
+				&& (error.ec == boost::system::errc::no_such_file_or_directory
+					|| error.ec == boost::asio::error::eof
+					|| error.ec == errors::file_too_short);
+			if (missing_partfile)
+			{
+				// Missing auxiliary backing is a recoverable local condition, not a
+				// peer or disk failure. Demote the piece and reject this request while
+				// the part-file recovery path rebuilds the skipped ranges. Do not emit
+				// file_error_alert or count this toward peer disconnection.
+				t->partfile_read_failed(r.piece);
+				write_dont_have(r.piece);
+				write_reject_request(r);
+				m_disk_read_failures = 0;
+				return;
+			}
+
 			write_dont_have(r.piece);
 			write_reject_request(r);
 			if (t->alerts().should_post<file_error_alert>())

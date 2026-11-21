@@ -1032,6 +1032,12 @@ void pread_disk_io::async_hash(storage_index_t const storage
 		sha1_hash{}
 	);
 
+	if ((flags & disk_interface::v1_hash) && j->storage->partfile_repair(piece))
+	{
+		add_fence_job(j);
+		return;
+	}
+
 	// pass the fence gate before consulting the cache. try_hash_piece() may
 	// hang the job on the cached_piece_entry for the hasher thread to post
 	// later; that job must count as outstanding on the storage like any other,
@@ -1300,6 +1306,56 @@ status_t pread_disk_io::do_job(aux::job::hash& a, aux::pread_disk_job* j)
 	TORRENT_ASSERT(v1 || v2);
 
 	int const blocks_to_read = std::max(blocks_in_piece, blocks_in_piece2);
+
+	if (v1 && j->storage->partfile_repair(a.piece))
+	{
+		time_point const start_time = clock_type::now();
+		std::unique_ptr<char[]> buf(new char[std::size_t(piece_size)]);
+		span<char> const buf_span{buf.get(), piece_size};
+
+		j->error.ec.clear();
+		int const read_ret = j->storage->read(m_settings, buf_span, a.piece, 0
+			, file_mode, j->flags, j->error);
+
+		if (!j->error.ec && read_ret == piece_size)
+		{
+			hasher h;
+			h.update(buf_span);
+			a.piece_hash = h.final();
+
+			if (v2)
+			{
+				hasher256 h2;
+				int offset = 0;
+				for (int i = 0; i < blocks_in_piece2; ++i)
+				{
+					std::ptrdiff_t const len2 = std::min(default_block_size, piece_size2 - offset);
+					h2.reset();
+					h2.update({buf.get() + offset, len2});
+					a.block_hashes[i] = h2.final();
+					offset += default_block_size;
+				}
+			}
+
+			j->storage->drop_precomputed_v2(a.piece);
+			j->storage->commit_partfile_recovery(a.piece);
+			j->storage->set_partfile_repair(a.piece, false);
+
+			std::int64_t const read_time = total_microseconds(clock_type::now() - start_time);
+			m_stats_counters.inc_stats_counter(counters::num_read_back, blocks_to_read);
+			m_stats_counters.inc_stats_counter(counters::num_read_ops, 1);
+			m_stats_counters.inc_stats_counter(counters::disk_hash_time, read_time);
+			m_stats_counters.inc_stats_counter(counters::disk_job_time, read_time);
+			return {};
+		}
+
+		if (!j->error.ec)
+		{
+			j->error.ec = boost::asio::error::eof;
+			j->error.operation = operation_t::file_read;
+		}
+		return disk_status::fatal_disk_error;
+	}
 
 	// async_hash's fast path may have partially populated a.block_hashes
 	// already; preserve those entries (only fill all-zero slots).
@@ -1639,6 +1695,8 @@ status_t pread_disk_io::do_job(aux::job::check_fastresume& a, aux::pread_disk_jo
 	// order to set up the links (if present)
 	bool const verify_success = j->storage->verify_resume_data(*rd
 		, links ? *links : aux::vector<std::string, file_index_t>(), j->error);
+	if (j->error && j->error.ec.category() != libtorrent_category())
+		return disk_status::fatal_disk_error | ret_flag;
 
 	// j->error may have been set at this point, by verify_resume_data()
 	// it's important to not have it cleared out subsequent calls, as long

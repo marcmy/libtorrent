@@ -30,6 +30,9 @@ POSSIBILITY OF SUCH DAMAGE.
 
 */
 
+#ifndef TORRENT_DRIVE_INFO_HPP
+#define TORRENT_DRIVE_INFO_HPP
+
 #include <string>
 
 namespace libtorrent {
@@ -47,3 +50,5 @@ drive_info get_drive_info(std::string const& path);
 
 }
 }
+
+#endif // TORRENT_DRIVE_INFO_HPP

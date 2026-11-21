@@ -125,6 +125,15 @@ namespace libtorrent::aux {
 		bool v2() const { return m_v2; }
 		bool disable_hash_checks() const { return m_disable_hash_checks; }
 
+		// A v1 piece whose skipped-file bytes disappeared from the part file.
+		// pread_disk_io keeps this active while recovery writes are flushed and
+		// verifies the piece from backing storage instead of the write cache.
+		bool partfile_repair(piece_index_t piece) const;
+		void set_partfile_repair(piece_index_t piece, bool enabled);
+		// Called by the fenced recovery hash after a complete backing read.
+		// Priority-0 files touched by this piece now use .parts permanently.
+		void commit_partfile_recovery(piece_index_t piece);
+
 		// SHA-256 block hashes deposited by the v2 hash queue
 		// (disk_cache::drain_v2_hash_queue) for later consumption by hash and
 		// hash2 jobs, avoiding a read-back from disk. A block whose hash
@@ -151,6 +160,10 @@ namespace libtorrent::aux {
 		bool m_in_fence_flush = false;
 
 		void need_partfile();
+		bool skipped_file(file_index_t file) const;
+		bool use_partfile_for_piece(file_index_t file, piece_index_t piece) const;
+		void mark_auxiliary_read_failure(file_index_t file, piece_index_t piece
+			, error_code const& ec);
 
 		renamed_files m_renamed_files;
 
@@ -194,6 +207,9 @@ namespace libtorrent::aux {
 		// part file must be locked against it
 		std::mutex m_part_file_mutex;
 		std::unique_ptr<part_file> m_part_file;
+
+		mutable std::mutex m_partfile_repair_mutex;
+		aux::vector<bool, piece_index_t> m_partfile_repair;
 
 		// this is a bitfield with one bit per file. A bit being set means
 		// we've written to that file previously. If we do write to a file

@@ -8,12 +8,15 @@ import base64
 import socket
 import socketserver
 import traceback
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 chunked_encoding = False
 keepalive = True
 expected_host = ''
+test_root = Path.cwd().resolve()
 
 try:
     fin = open('test_file', 'rb')
@@ -23,6 +26,41 @@ try:
     fin.close()
 except Exception:
     pass
+
+
+def resolve_test_file(request_target):
+    """Resolve a request to an existing file contained by the test directory."""
+    path = unquote(urlsplit(request_target).path)
+    parts = []
+    for part in path.split('/'):
+        if not part or part == '.':
+            continue
+        if '\\' in part:
+            raise FileNotFoundError(path)
+        if part == '..':
+            if not parts:
+                raise FileNotFoundError(path)
+            parts.pop()
+        else:
+            parts.append(part)
+
+    if not parts:
+        raise FileNotFoundError(path)
+
+    # Walk only through filesystem-discovered entries. Request path components
+    # are compared as names and are never used to construct a filesystem path.
+    current = test_root
+    for part in parts:
+        try:
+            current = next(entry for entry in current.iterdir()
+                           if entry.name == part).resolve()
+            current.relative_to(test_root)
+        except (OSError, RuntimeError, StopIteration, ValueError) as exc:
+            raise FileNotFoundError(path) from exc
+
+    if not current.is_file():
+        raise FileNotFoundError(path)
+    return current
 
 
 class http_server_with_timeout(HTTPServer):
@@ -48,10 +86,14 @@ class http_server_with_timeout(HTTPServer):
 class http_handler(BaseHTTPRequestHandler):
 
     def normalize_request_path(self):
-        # if the request contains the hostname and port. strip it
-        if self.path.startswith('http://') or self.path.startswith('https://'):
-            self.path = self.path[8:]
-            self.path = self.path[self.path.find('/'):]
+        # If the request contains the hostname and port, keep only its path and
+        # query. This also handles http:// and https:// without hard-coded
+        # scheme lengths.
+        parsed = urlsplit(self.path)
+        if parsed.scheme in ('http', 'https'):
+            self.path = parsed.path or '/'
+            if parsed.query:
+                self.path += '?' + parsed.query
 
     def do_GET(self):
         try:
@@ -82,7 +124,6 @@ class http_handler(BaseHTTPRequestHandler):
             return
 
         self.normalize_request_path()
-        file_path = os.path.normpath(self.path)
         sys.stdout.flush()
 
         if self.path == '/password_protected':
@@ -98,7 +139,6 @@ class http_handler(BaseHTTPRequestHandler):
                 return
 
             self.path = '/test_file'
-            file_path = os.path.normpath('/test_file')
 
         if self.path == '/redirect':
             self.send_response(301)
@@ -146,11 +186,12 @@ class http_handler(BaseHTTPRequestHandler):
             self.request.close()
         else:
             filename = ''
+            f = None
             try:
-                filename = os.path.normpath(file_path[1:])
-                # serve file by invoking default handler
-                f = open(filename, 'rb')
-                size = int(os.stat(filename).st_size)
+                file_path = resolve_test_file(self.path)
+                filename = str(file_path)
+                f = file_path.open('rb')
+                size = int(file_path.stat().st_size)
                 start_range = 0
                 end_range = size
                 if 'Range' in self.headers:
@@ -208,6 +249,9 @@ class http_handler(BaseHTTPRequestHandler):
                     self.end_headers()
                 except Exception:
                     pass
+            finally:
+                if f is not None:
+                    f.close()
             if not keepalive and not use_ssl:
                 try:
                     self.request.shutdown(socket.SHUT_RD)
@@ -245,11 +289,11 @@ class http_handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        filename = os.path.normpath(self.path[1:])
+        filename = ''
         try:
-            f = open(filename, 'rb')
-            data = f.read()
-            f.close()
+            file_path = resolve_test_file(self.path)
+            filename = str(file_path)
+            data = file_path.read_bytes()
 
             self.send_response(200)
             self.send_header('Content-Type', 'text/xml; charset="utf-8"')
@@ -290,6 +334,7 @@ if __name__ == '__main__':
 
     if use_ssl:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain("../ssl/server.pem")
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
 

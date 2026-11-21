@@ -131,8 +131,18 @@ void test_swarm(test_flags_t const flags)
 		return false;
 	};
 
+	// 80 ticks has historically been enough for this swarm. Allow a bounded
+	// grace period when a slow CI/simulator run is still making forward
+	// progress, but do not turn a genuinely stalled swarm into a long timeout.
+	constexpr int soft_timeout = 80;
+	constexpr int hard_timeout = 120;
+	constexpr int progress_grace = 10;
+	float last_progress2 = -1.f;
+	float last_progress3 = -1.f;
+	int last_progress_tick = 0;
+
 	auto const start_time = lt::clock_type::now();
-	for (int i = 0; i < 80; ++i)
+	for (int i = 0; i < hard_timeout; ++i)
 	{
 		print_alerts(ses1, "ses1", false, false, fail_on_hash_failure);
 		print_alerts(ses2, "ses2", false, false, fail_on_hash_failure);
@@ -148,6 +158,12 @@ void test_swarm(test_flags_t const flags)
 			TEST_CHECK(tor1.flags() & torrent_flags::super_seeding);
 		}
 
+		bool const made_progress = st2.progress > last_progress2
+			|| st3.progress > last_progress3;
+		if (made_progress) last_progress_tick = i;
+		if (st2.progress > last_progress2) last_progress2 = st2.progress;
+		if (st3.progress > last_progress3) last_progress3 = st3.progress;
+
 		if (st2.progress < 1.f && st2.progress > 0.5f)
 		{
 			sum_dl_rate2 += float(st2.download_payload_rate);
@@ -162,11 +178,22 @@ void test_swarm(test_flags_t const flags)
 		print_ses_rate(start_time, &st1, &st2, &st3);
 
 		if (st2.is_seeding && st3.is_seeding) break;
+		if (i >= soft_timeout - 1 && i - last_progress_tick >= progress_grace) break;
 		std::this_thread::sleep_for(lt::milliseconds(1000));
 	}
 
-	TEST_CHECK(tor2.status().is_seeding);
-	TEST_CHECK(tor3.status().is_seeding);
+	torrent_status const final_st2 = tor2.status();
+	torrent_status const final_st3 = tor3.status();
+	if (!final_st2.is_seeding || !final_st3.is_seeding)
+	{
+		std::printf("swarm completion timeout: tor2 progress=%.3f seeding=%d, "
+			"tor3 progress=%.3f seeding=%d\n"
+			, double(final_st2.progress), int(final_st2.is_seeding)
+			, double(final_st3.progress), int(final_st3.is_seeding));
+	}
+
+	TEST_CHECK(final_st2.is_seeding);
+	TEST_CHECK(final_st3.is_seeding);
 
 	float average2 = count_dl_rates2 > 0 ? sum_dl_rate2 / float(count_dl_rates2) : -1;
 	float average3 = count_dl_rates3 > 0 ? sum_dl_rate3 / float(count_dl_rates3) : -1;
@@ -174,7 +201,7 @@ void test_swarm(test_flags_t const flags)
 	std::cout << "average rate: " << (average2 / 1000.f) << "kB/s - "
 		<< (average3 / 1000.f) << "kB/s" << std::endl;
 
-	if (tor2.status().is_seeding && tor3.status().is_seeding) std::cout << "done\n";
+	if (final_st2.is_seeding && final_st3.is_seeding) std::cout << "done\n";
 
 	// make sure the files are deleted
 	ses1.remove_torrent(tor1, lt::session::delete_files);

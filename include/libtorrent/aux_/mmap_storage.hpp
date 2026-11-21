@@ -123,6 +123,12 @@ namespace libtorrent::aux {
 		bool v2() const { return m_v2; }
 		bool disable_hash_checks() const { return m_disable_hash_checks; }
 
+		// A v1 piece whose skipped-file bytes disappeared from the part file.
+		// mmap_disk_io keeps this state active until recovery writes drain and
+		// a full backing-storage hash has completed.
+		bool partfile_repair(piece_index_t piece) const;
+		void set_partfile_repair(piece_index_t piece, bool enabled);
+
 		// SHA-256 block hashes computed inline during write jobs (see
 		// m_precomputed_v2). Consumed by hash/hash2 jobs to avoid re-reading the
 		// block from disk just to hash it. A block whose hash hasn't been
@@ -190,6 +196,13 @@ namespace libtorrent::aux {
 		// part file must be locked against it
 		std::mutex m_part_file_mutex;
 		std::unique_ptr<part_file> m_part_file;
+
+		// A missing part-file range discovered while hashing means the
+		// piece cannot be verified, not that the wanted-file bytes are bad.
+		// Keep those pieces in a one-shot recovery mode: their next download
+		// only rebuilds skipped-file data in the part file.
+		mutable std::mutex m_partfile_repair_mutex;
+		aux::vector<bool, piece_index_t> m_partfile_repair;
 
 		// this is a bitfield with one bit per file. A bit being set means
 		// we've written to that file previously. If we do write to a file

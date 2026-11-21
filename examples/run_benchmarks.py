@@ -204,6 +204,8 @@ def build_commandline(config, port):
     if config['build'] == 'libtorrent':
         return build_libtorrent_commandline(config, port)
 
+    raise ValueError('unsupported build: %s' % config['build'])
+
 
 def delete_files(files):
     for i in files:

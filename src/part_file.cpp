@@ -161,6 +161,9 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		slot_index_t const slot = (i == m_piece_map.end())
 			? allocate_slot(piece) : i->second;
+		// The on-disk file may have been deleted while this part_file stayed
+		// alive. Rewriting an already-known slot must recreate the header too.
+		m_dirty_metadata = true;
 
 		l.unlock();
 
@@ -179,6 +182,9 @@ namespace libtorrent::aux {
 		auto const i = m_piece_map.find(piece);
 		slot_index_t const slot = (i == m_piece_map.end())
 			? allocate_slot(piece) : i->second;
+		// The on-disk file may have been deleted while this part_file stayed
+		// alive. Rewriting an already-known slot must recreate the header too.
+		m_dirty_metadata = true;
 
 		l.unlock();
 
@@ -260,12 +266,21 @@ namespace libtorrent::aux {
 	aux::file_handle part_file::open_file(aux::open_mode_t const mode, error_code& ec) try
 	{
 		std::string const fn = combine_path(m_path, m_name);
+		aux::open_mode_t file_mode = mode;
+		// Part files reserve piece-sized slots but commonly contain only a
+		// small boundary range in each slot. Mark write-opened part files
+		// sparse so unwritten slot ranges do not consume physical disk space.
+#ifdef TORRENT_WINDOWS
+		if (file_mode & aux::open_mode::write)
+			file_mode |= aux::open_mode::sparse;
+#endif
+
 		try {
-			return {fn, 0, mode};
+			return {fn, 0, file_mode};
 		}
 		catch (storage_error const& e)
 		{
-			if ((mode & aux::open_mode::write)
+			if ((file_mode & aux::open_mode::write)
 				&& e.ec == boost::system::errc::no_such_file_or_directory)
 			{
 				// this means the directory the file is in doesn't exist.
@@ -273,8 +288,9 @@ namespace libtorrent::aux {
 				ec.clear();
 				create_directories(m_path, ec);
 				if (ec) return {};
-				return {fn, 0, mode};
+				return {fn, 0, file_mode};
 			}
+			ec = e.ec;
 			return {};
 		}
 	}
@@ -282,6 +298,12 @@ namespace libtorrent::aux {
 	{
 		ec = e.ec;
 		return {};
+	}
+
+	bool part_file::has_piece(piece_index_t const piece)
+	{
+		std::lock_guard<std::mutex> l(m_mutex);
+		return m_piece_map.find(piece) != m_piece_map.end();
 	}
 
 	void part_file::free_piece(piece_index_t const piece)

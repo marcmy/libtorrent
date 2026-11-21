@@ -158,6 +158,21 @@ mmap_storage::mmap_storage(
 			, files().num_pieces(), files().piece_length());
 	}
 
+	bool mmap_storage::partfile_repair(piece_index_t const piece) const
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty()) return false;
+		return m_partfile_repair[piece];
+	}
+
+	void mmap_storage::set_partfile_repair(piece_index_t const piece, bool const enabled)
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty())
+			m_partfile_repair.resize(files().num_pieces(), false);
+		m_partfile_repair[piece] = enabled;
+	}
+
 	void mmap_storage::set_file_priority(settings_interface const& sett
 		, aux::vector<download_priority_t, file_index_t>& prio
 		, storage_error& ec)
@@ -441,6 +456,22 @@ mmap_storage::mmap_storage(
 		// make sure we can pick up new files added to the download directory when
 		// we start the torrent again
 		m_stat_cache.clear();
+
+		// Refresh skipped-file backing after the handles and stat cache have been
+		// released. A priority-0 file that was absent earlier may have been restored
+		// externally. In that case its real file must become authoritative again;
+		// otherwise selective recheck would keep hashing stale/missing part-file data.
+		filenames const fs = names();
+		for (file_index_t const i : m_file_priority.range())
+		{
+			if (m_file_priority[i] != dont_download || fs.pad_file_at(i))
+				continue;
+
+			error_code error;
+			auto const size = m_stat_cache.get_filesize(i, fs, m_save_path, error);
+			if (!error && size > 0)
+				use_partfile(i, false);
+		}
 	}
 
 	void mmap_storage::delete_files(remove_flags_t const options, storage_error& ec)
@@ -471,8 +502,68 @@ mmap_storage::mmap_storage(
 		, aux::vector<std::string, file_index_t> const& links
 		, storage_error& ec)
 	{
-		return aux::verify_resume_data(rd, links, names()
+		bool const ret = aux::verify_resume_data(rd, links, names()
 			, m_file_priority, m_stat_cache, m_save_path, ec);
+
+		if (!ret || rd.have_pieces.empty()) return ret;
+
+		// While checking, torrent::write_resume_data() deliberately saves only
+		// the prefix that has actually been checked. A cleared bit in that
+		// prefix therefore means "checked and missing", not "never checked".
+		// Rebuild the transient part-file recovery classification here so an
+		// interrupted check can resume without requiring another Force Recheck.
+		//
+		// A completed torrent may also have a full-size bitfield after the check
+		// finished but before recovery started. completed_time lets us recover
+		// that case without treating every ordinary incomplete torrent as a
+		// part-file recovery candidate.
+		bool const interrupted_check = rd.have_pieces.size() < files().num_pieces();
+		if (!interrupted_check && rd.completed_time == 0) return ret;
+
+		filenames const fs = names();
+		int const checked_pieces = std::min(rd.have_pieces.size(), files().num_pieces());
+		for (piece_index_t piece{0}; piece < piece_index_t(checked_pieces); ++piece)
+		{
+			if (rd.have_pieces[piece]) continue;
+
+			bool has_wanted = false;
+			bool has_partfile = false;
+			bool wanted_backing_complete = true;
+
+			for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
+			{
+				file_index_t const file = slice.file_index;
+				if (fs.pad_file_at(file)) continue;
+
+				bool const skipped = file < m_file_priority.end_index()
+					&& m_file_priority[file] == dont_download;
+				if (skipped)
+				{
+					if (use_partfile(file)) has_partfile = true;
+					continue;
+				}
+
+				has_wanted = true;
+				error_code stat_error;
+				auto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
+				if (stat_error || actual_size < slice.offset + slice.size)
+				{
+					wanted_backing_complete = false;
+					break;
+				}
+			}
+
+			// Only protect a mixed wanted/.parts piece when the wanted backing
+			// file is still physically complete. If a wanted file is genuinely
+			// missing or short, normal repair must be allowed to create it.
+			// If wanted bytes merely hash wrong, the protected backing-storage
+			// verification will fail, clear recovery, and the next attempt becomes
+			// an ordinary repair.
+			if (has_wanted && has_partfile && wanted_backing_complete)
+				set_partfile_repair(piece, true);
+		}
+
+		return ret;
 	}
 
 	std::pair<status_t, std::string> mmap_storage::move_storage(std::string save_path
@@ -618,7 +709,7 @@ mmap_storage::mmap_storage(
 		std::this_thread::sleep_for(milliseconds(100));
 #endif
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, flags, &sett](file_index_t const file_index
+			, [this, piece, mode, flags, &sett](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
 		{
@@ -647,6 +738,14 @@ mmap_storage::mmap_storage(
 				}
 				return ret;
 			}
+
+			// This piece was made incomplete only because skipped-file data
+			// disappeared from the part file. Rebuild that auxiliary data without
+			// rewriting bytes that already exist in wanted files. This is
+			// especially important for WOF-backed files, where any write may
+			// materialize the whole compressed file.
+			if (partfile_repair(piece))
+				return int(buf.size());
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -749,9 +848,8 @@ mmap_storage::mmap_storage(
 
 		char dummy = 0;
 		std::vector<char> scratch;
-
-		return readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, mode, flags, &ph, &sett, &scratch](file_index_t const file_index
+		int const ret = readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
+			, [this, piece, mode, flags, &ph, &sett, &scratch](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> const buf, storage_error& ec)
 		{
@@ -769,6 +867,12 @@ mmap_storage::mmap_storage(
 
 				if (e)
 				{
+					if (e == boost::system::errc::no_such_file_or_directory
+						|| e == boost::asio::error::eof
+						|| e == lt::errors::file_too_short)
+					{
+						set_partfile_repair(piece, true);
+					}
 					ec.ec = e;
 					ec.operation = operation_t::partfile_read;
 					return -1;
@@ -825,6 +929,8 @@ mmap_storage::mmap_storage(
 
 			return ret;
 		});
+
+		return ret;
 	}
 
 	int mmap_storage::hash2(settings_interface const& sett

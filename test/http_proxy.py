@@ -12,12 +12,35 @@ import argparse
 import base64
 import http.client
 import http.server
+import re
 import select
 import socket
 import socketserver
 import sys
 import traceback
 import urllib.parse
+
+
+_HTTP_TOKEN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def valid_header(name, value):
+    """Return whether a header can be forwarded without response splitting."""
+    return (
+        _HTTP_TOKEN.fullmatch(name) is not None
+        and '\r' not in value
+        and '\n' not in value
+    )
+
+
+def valid_connection_token(token):
+    return _HTTP_TOKEN.fullmatch(token) is not None
+
+
+def safe_reason(reason):
+    if reason is None or '\r' in reason or '\n' in reason:
+        return None
+    return reason
 
 
 class ChunkError(Exception):
@@ -349,6 +372,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             request_connection_tokens = []
         for token in request_connection_tokens:
+            if not valid_connection_token(token):
+                continue
             # Better parsing than base class, I think
             if token.lower() == "keep-alive":
                 self.close_connection = False
@@ -361,7 +386,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 filter_headers.add(token.lower())
 
         for name, value in self.headers.items():
-            if name.lower() in filter_headers:
+            if name.lower() in filter_headers or not valid_header(name, value):
                 continue
             upstream.putheader(name, value)
 
@@ -400,7 +425,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """
         # send_response supplies some headers unconditionally
         self.log_request(response.code)
-        self.send_response_only(response.code, response.reason)
+        self.send_response_only(response.code, safe_reason(response.reason))
 
         connection_tokens = []
         filter_headers = set(
@@ -414,6 +439,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             response_connection_tokens = []
         for token in response_connection_tokens:
+            if not valid_connection_token(token):
+                continue
             if token.lower() == "close":
                 continue
             if token.lower() in pass_headers:
@@ -424,7 +451,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.close_connection:
             connection_tokens.append("close")
         for name, value in response.getheaders():
-            if name.lower() in filter_headers:
+            if name.lower() in filter_headers or not valid_header(name, value):
                 continue
             self.send_header(name, value)
         if connection_tokens:

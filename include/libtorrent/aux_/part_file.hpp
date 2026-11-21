@@ -44,6 +44,9 @@ namespace libtorrent::aux {
 		int hash(hasher& ph, std::ptrdiff_t len, piece_index_t piece, int offset, error_code& ec);
 		int hash2(hasher256& ph, std::ptrdiff_t len, piece_index_t piece, int offset, error_code& ec);
 
+		// Whether the loaded part-file header maps this piece to a slot.
+		bool has_piece(piece_index_t piece);
+
 		// free the slot the given piece is stored in. We no longer need to store this
 		// piece in the part file
 		void free_piece(piece_index_t piece);

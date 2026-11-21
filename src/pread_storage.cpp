@@ -109,6 +109,59 @@ pread_storage::pread_storage(
 			, files().num_pieces(), files().piece_length());
 	}
 
+	bool pread_storage::partfile_repair(piece_index_t const piece) const
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty()) return false;
+		return m_partfile_repair[piece];
+	}
+
+	void pread_storage::set_partfile_repair(piece_index_t const piece, bool const enabled)
+	{
+		std::lock_guard<std::mutex> l(m_partfile_repair_mutex);
+		if (m_partfile_repair.empty())
+			m_partfile_repair.resize(files().num_pieces(), false);
+		m_partfile_repair[piece] = enabled;
+	}
+
+	bool pread_storage::skipped_file(file_index_t const file) const
+	{
+		return file < m_file_priority.end_index()
+			&& m_file_priority[file] == dont_download;
+	}
+
+	bool pread_storage::use_partfile_for_piece(file_index_t const file
+		, piece_index_t const piece) const
+	{
+		return skipped_file(file) && (use_partfile(file) || partfile_repair(piece));
+	}
+
+	void pread_storage::mark_auxiliary_read_failure(file_index_t const file
+		, piece_index_t const piece, error_code const& e)
+	{
+		if (!m_v1 || !skipped_file(file)) return;
+		if (e == boost::system::errc::no_such_file_or_directory
+			|| e == boost::asio::error::eof
+			|| e == lt::errors::file_too_short)
+			set_partfile_repair(piece, true);
+	}
+
+	void pread_storage::commit_partfile_recovery(piece_index_t const piece)
+	{
+		filenames const fs = names();
+		for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
+		{
+			file_index_t const file = slice.file_index;
+			if (fs.pad_file_at(file) || !skipped_file(file) || use_partfile(file)) continue;
+
+			file_status st;
+			error_code stat_error;
+			stat_file(fs.file_path(file, m_save_path), &st, stat_error);
+			if (stat_error || st.file_size < slice.offset + slice.size)
+				use_partfile(file, true);
+		}
+	}
+
 	void pread_storage::set_file_priority(settings_interface const& sett
 		, vector<download_priority_t, file_index_t>& prio
 		, storage_error& ec)
@@ -195,10 +248,8 @@ pread_storage::pread_storage(
 			ec.ec.clear();
 			restore_prio.disarm();
 
-			if (m_file_priority[i] == dont_download && use_partfile(i))
-			{
+			if (m_file_priority[i] == dont_download)
 				need_partfile();
-			}
 		}
 		if (m_part_file) m_part_file->flush_metadata(ec.ec);
 		if (ec)
@@ -259,6 +310,7 @@ pread_storage::pread_storage(
 			if (m_file_priority[i] != dont_download || fs.pad_file_at(i))
 				continue;
 
+			need_partfile();
 			error_code err;
 			auto const size = m_stat_cache.get_filesize(i, fs, m_save_path, err);
 			if (!err && size > 0)
@@ -340,6 +392,22 @@ pread_storage::pread_storage(
 		// make sure we can pick up new files added to the download directory when
 		// we start the torrent again
 		m_stat_cache.clear();
+
+		// Refresh skipped-file backing after the handles and stat cache have been
+		// released. A priority-0 file that was absent earlier may have been restored
+		// externally. In that case its real file must become authoritative again;
+		// otherwise selective recheck would keep hashing stale/missing part-file data.
+		filenames const fs = names();
+		for (file_index_t const i : m_file_priority.range())
+		{
+			if (m_file_priority[i] != dont_download || fs.pad_file_at(i))
+				continue;
+
+			error_code error;
+			auto const size = m_stat_cache.get_filesize(i, fs, m_save_path, error);
+			if (!error && size > 0)
+				use_partfile(i, false);
+		}
 	}
 
 	void pread_storage::delete_files(remove_flags_t const options, storage_error& ec)
@@ -369,8 +437,76 @@ pread_storage::pread_storage(
 		, aux::vector<std::string, file_index_t> const& links
 		, storage_error& ec)
 	{
-		return aux::verify_resume_data(rd, links, names()
+		bool const ret = aux::verify_resume_data(rd, links, names()
 			, m_file_priority, m_stat_cache, m_save_path, ec);
+
+		if (!ret || rd.have_pieces.empty()) return ret;
+
+		// While checking, torrent::write_resume_data() deliberately saves only
+		// the prefix that has actually been checked. A cleared bit in that
+		// prefix therefore means "checked and missing", not "never checked".
+		// Rebuild the transient part-file recovery classification here so an
+		// interrupted check can resume without requiring another Force Recheck.
+		//
+		// A completed torrent may also have a full-size bitfield after the check
+		// finished but before recovery started. completed_time lets us recover
+		// that case without treating every ordinary incomplete torrent as a
+		// part-file recovery candidate.
+		bool const interrupted_check = rd.have_pieces.size() < files().num_pieces();
+		if (!interrupted_check && rd.completed_time == 0) return ret;
+
+		filenames const fs = names();
+		int const checked_pieces = std::min(rd.have_pieces.size(), files().num_pieces());
+		for (piece_index_t piece{0}; piece < piece_index_t(checked_pieces); ++piece)
+		{
+			if (rd.have_pieces[piece]) continue;
+
+			bool has_wanted = false;
+			bool auxiliary_backing_missing = false;
+			bool wanted_backing_complete = true;
+
+			for (file_slice const& slice : files().map_block(piece, 0, files().piece_size(piece)))
+			{
+				file_index_t const file = slice.file_index;
+				if (fs.pad_file_at(file)) continue;
+
+				bool const skipped = file < m_file_priority.end_index()
+					&& m_file_priority[file] == dont_download;
+				if (skipped)
+				{
+					if (use_partfile(file))
+					{
+						if (!m_part_file || !m_part_file->has_piece(piece))
+							auxiliary_backing_missing = true;
+					}
+					else
+					{
+						error_code stat_error;
+						auto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
+						if (stat_error || actual_size < slice.offset + slice.size)
+							auxiliary_backing_missing = true;
+					}
+					continue;
+				}
+
+				has_wanted = true;
+				error_code stat_error;
+				auto const actual_size = m_stat_cache.get_filesize(file, fs, m_save_path, stat_error);
+				if (stat_error || actual_size < slice.offset + slice.size)
+				{
+					wanted_backing_complete = false;
+					break;
+				}
+			}
+
+			// Protect only when the missing piece can actually be explained by
+			// absent auxiliary backing. This avoids blaming peers for a recovery
+			// hash that failed because wanted bytes were genuinely corrupt.
+			if (has_wanted && auxiliary_backing_missing && wanted_backing_complete)
+				set_partfile_repair(piece, true);
+		}
+
+		return ret;
 	}
 
 	std::pair<status_t, std::string> pread_storage::move_storage(std::string save_path
@@ -420,16 +556,14 @@ pread_storage::pread_storage(
 		std::this_thread::sleep_for(milliseconds(100));
 #endif
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, flags, &sett](file_index_t const file_index
+			, [this, piece, mode, flags, &sett](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char> buf, storage_error& ec)
 		{
 			// reading from a pad file yields zeroes
 			if (files().pad_file_at(file_index)) return read_zeroes(buf);
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -439,6 +573,12 @@ pread_storage::pread_storage(
 
 				if (e)
 				{
+					if (m_v1
+						&& (e == boost::system::errc::no_such_file_or_directory
+							|| e == boost::asio::error::eof
+							|| e == lt::errors::file_too_short))
+						set_partfile_repair(piece, true);
+
 					ec.ec = e;
 					ec.file(file_index);
 					ec.operation = operation_t::partfile_read;
@@ -448,7 +588,11 @@ pread_storage::pread_storage(
 			}
 
 			auto handle = open_file(sett, file_index, mode, ec);
-			if (ec) return -1;
+			if (ec)
+			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
+				return -1;
+			}
 
 			// set this unconditionally in case the upper layer would like to treat
 			// short reads as errors
@@ -456,6 +600,7 @@ pread_storage::pread_storage(
 
 			int const ret = pread_all(handle->fd(), buf, file_offset, ec.ec);
 			if (ec.ec) {
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
 				ec.file(file_index);
 				return ret;
 			}
@@ -556,7 +701,7 @@ pread_storage::pread_storage(
 #endif
 		auto const write_mode = sett.get_int(settings_pack::disk_io_write_mode);
 		return readwrite_vec(files(), buffers, piece, offset, error
-			, [this, mode, &sett, write_mode](file_index_t const file_index
+			, [this, piece, mode, &sett, write_mode](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<span<char const> const> const bufs, storage_error& ec)
 		{
@@ -564,9 +709,7 @@ pread_storage::pread_storage(
 			if (files().pad_file_at(file_index))
 				return bufs_size(bufs);
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -582,6 +725,9 @@ pread_storage::pread_storage(
 				}
 				return ret;
 			}
+
+			if (partfile_repair(piece))
+				return bufs_size(bufs);
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -620,7 +766,7 @@ pread_storage::pread_storage(
 #endif
 		auto const write_mode = sett.get_int(settings_pack::disk_io_write_mode);
 		return readwrite(files(), buffer, piece, offset, error
-			, [this, mode, &sett, write_mode](file_index_t const file_index
+			, [this, piece, mode, &sett, write_mode](file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
 		{
@@ -628,9 +774,7 @@ pread_storage::pread_storage(
 			if (files().pad_file_at(file_index))
 				return int(buf.size());
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				TORRENT_ASSERT(m_part_file);
 
@@ -648,6 +792,9 @@ pread_storage::pread_storage(
 				}
 				return ret;
 			}
+
+			if (partfile_repair(piece))
+				return int(buf.size());
 
 			// invalidate our stat cache for this file, since
 			// we're writing to it
@@ -689,7 +836,7 @@ pread_storage::pread_storage(
 		std::vector<char> scratch_buffer;
 
 		return readwrite(files(), span<char const>{&dummy, len}, piece, offset, error
-			, [this, mode, flags, &ph, &sett, &scratch_buffer](
+			, [this, piece, mode, flags, &ph, &sett, &scratch_buffer](
 				file_index_t const file_index
 				, std::int64_t const file_offset
 				, span<char const> buf, storage_error& ec)
@@ -697,9 +844,7 @@ pread_storage::pread_storage(
 			if (files().pad_file_at(file_index))
 				return hash_zeroes(ph, buf.size());
 
-			if (file_index < m_file_priority.end_index()
-				&& m_file_priority[file_index] == dont_download
-				&& use_partfile(file_index))
+			if (use_partfile_for_piece(file_index, piece))
 			{
 				error_code e;
 				peer_request map = files().map_file(file_index, file_offset, 0);
@@ -708,6 +853,11 @@ pread_storage::pread_storage(
 
 				if (e)
 				{
+					if (e == boost::system::errc::no_such_file_or_directory
+						|| e == boost::asio::error::eof
+						|| e == lt::errors::file_too_short)
+						set_partfile_repair(piece, true);
+
 					ec.ec = e;
 					ec.file(file_index);
 					ec.operation = operation_t::partfile_read;
@@ -716,12 +866,17 @@ pread_storage::pread_storage(
 			}
 
 			auto handle = open_file(sett, file_index, mode, ec);
-			if (ec) return -1;
+			if (ec)
+			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
+				return -1;
+			}
 
 			scratch_buffer.resize(std::size_t(buf.size()));
 			int ret = pread_all(handle->fd(), scratch_buffer, file_offset, ec.ec);
 			if (ec.ec)
 			{
+				mark_auxiliary_read_failure(file_index, piece, ec.ec);
 				ec.file(file_index);
 				ec.operation = operation_t::file_read;
 				return ret;
@@ -753,9 +908,7 @@ pread_storage::pread_storage(
 		TORRENT_ASSERT(file_offset >= 0);
 		TORRENT_ASSERT(!files().pad_file_at(file_index));
 
-		if (file_index < m_file_priority.end_index()
-			&& m_file_priority[file_index] == dont_download
-			&& use_partfile(file_index))
+		if (use_partfile_for_piece(file_index, piece))
 		{
 			error_code e;
 			peer_request map = files().map_file(file_index, file_offset, 0);

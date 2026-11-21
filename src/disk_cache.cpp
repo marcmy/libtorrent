@@ -529,8 +529,8 @@ keep_going:
 	}
 
 	// end = first gap in the contiguous run, needed for flushed_cursor trimming
-	std::uint16_t end = cursor;
-	while (end < piece_iter->blocks_in_piece() && blocks_storage[end - cursor].data())
+	int end = int(cursor);
+	while (end < piece_iter->blocks_in_piece() && blocks_storage[end - int(cursor)].data())
 		++end;
 
 	// insert() only sets needs_hasher_kick_flag for v1/hybrid pieces.

@@ -449,6 +449,7 @@ namespace libtorrent::aux {
 		// this is called when the torrent has metadata.
 		// it will initialize the storage and the piece-picker
 		void init();
+		void check_resume_data();
 
 		void load_merkle_trees(aux::vector<std::vector<sha256_hash>, file_index_t> t
 			, aux::vector<bitfield, file_index_t> mask
@@ -476,6 +477,9 @@ namespace libtorrent::aux {
 			storage_error const& error,
 			std::uint8_t picker_gen);
 		void files_checked();
+		void recheck_files(std::vector<file_index_t> files);
+		void recheck_files_with_progress(std::vector<file_index_t> files
+			, torrent_handle::recheck_files_progress_callback progress);
 		void start_checking();
 
 		void start_announcing();
@@ -590,6 +594,11 @@ namespace libtorrent::aux {
 		void handle_exception();
 
 		enum class disk_class { none, write };
+		// A live read discovered that skipped-file backing for a piece
+		// disappeared. Demote the piece so its part-file ranges can be
+		// reconstructed without rewriting wanted-file bytes.
+		void partfile_read_failed(piece_index_t piece);
+
 		void handle_disk_error(string_view job_name
 			, storage_error const& error, peer_connection* c = nullptr
 			, disk_class rw = disk_class::none);

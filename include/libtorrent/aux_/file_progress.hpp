@@ -54,6 +54,10 @@ namespace libtorrent::aux {
 		void update(file_storage const& fs, piece_index_t index
 			, std::function<void(file_index_t)> const& completed_cb);
 
+		// Remove one previously-accounted HAVE piece. This is the exact
+		// inverse of update() and is used when backing data disappears.
+		void lost_piece(file_storage const& fs, piece_index_t index);
+
 #if TORRENT_USE_INVARIANT_CHECKS
 		bool have_piece(piece_index_t index) const
 		{
