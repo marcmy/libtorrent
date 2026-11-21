@@ -22,7 +22,10 @@ see LICENSE file.
 #include "libtorrent/peer_info.hpp"
 #include "libtorrent/bdecode.hpp"
 #include "libtorrent/bencode.hpp"
+#include "libtorrent/create_torrent.hpp"
 #include "libtorrent/entry.hpp"
+#include "libtorrent/hasher.hpp"
+#include "libtorrent/load_torrent.hpp"
 #include "libtorrent/torrent_info.hpp"
 #include "libtorrent/aux_/path.hpp"
 #include "libtorrent/session.hpp"
@@ -1573,6 +1576,84 @@ TORRENT_TEST(invalid_request_length_overflow)
 		rejected = true;
 	}
 	TEST_CHECK(rejected);
+}
+
+TORRENT_TEST(upload_missing_partfile_piece)
+{
+	constexpr int piece_size = 0x4000;
+	std::string const data(piece_size, 'a');
+	error_code ec;
+	create_directory("partfile_upload", ec);
+	TEST_CHECK(!ec);
+	std::ofstream file("partfile_upload/wanted", std::ios::binary);
+	file.write(data.data(), piece_size);
+	file.close();
+	TEST_CHECK(file.good());
+
+	lt::create_torrent ct({{"partfile_upload/wanted", piece_size}
+		, {"partfile_upload/.unwanted/skipped", piece_size}}
+		, piece_size, lt::create_torrent::v1_only);
+	ct.set_hash(0_piece, hasher(data).final());
+	ct.set_hash(1_piece, hasher(std::string(piece_size, 'b')).final());
+	settings_pack pack = settings();
+	pack.set_str(settings_pack::listen_interfaces, test_listen_interface());
+	lt::session ses(pack);
+	wait_for_listen(ses, "ses");
+
+	auto params = load_torrent_buffer(ct.generate_buf());
+	params.save_path = ".";
+	params.flags &= ~(torrent_flags::paused | torrent_flags::auto_managed);
+	// Resume data still claims both pieces after the backing for the skipped
+	// file has been removed.
+	params.have_pieces.resize(2, true);
+	params.file_priorities = {default_priority, dont_download};
+	torrent_handle const h = ses.add_torrent(params);
+	wait_for_seeding(ses, "ses");
+	TEST_CHECK(h.have_piece(0_piece));
+	TEST_CHECK(h.have_piece(1_piece));
+
+	io_context ios;
+	tcp::socket socket(ios);
+	socket.connect(ep("127.0.0.1", ses.listen_port()), ec);
+	TEST_CHECK(!ec);
+	if (ec) return;
+
+	char buffer[piece_size + 9];
+	do_handshake(socket, params.ti->info_hashes(), buffer);
+	send_have_none(socket);
+	send_interested(socket);
+
+	auto const read_until = [&](int const id)
+	{
+		for (;;)
+		{
+			int const len = read_message(socket, buffer);
+			if (len < 0 || (len > 0 && buffer[0] == id)) return len;
+		}
+	};
+	TEST_EQUAL(read_until(1), 1); // unchoke
+	send_request(socket, {1_piece, 0, piece_size});
+	TEST_EQUAL(read_until(16), 13); // reject request
+	TEST_CHECK(!h.have_piece(1_piece));
+	TEST_CHECK(h.have_piece(0_piece));
+
+	send_request(socket, {0_piece, 0, piece_size});
+	int const len = read_until(7); // piece
+	TEST_EQUAL(len, int(sizeof(buffer)));
+	if (len == int(sizeof(buffer)))
+	{
+		char const* ptr = buffer + 1;
+		TEST_EQUAL(aux::read_int32(ptr), 0);
+		TEST_EQUAL(aux::read_int32(ptr), 0);
+		TEST_CHECK(std::memcmp(ptr, data.data(), data.size()) == 0);
+	}
+
+	std::vector<alert*> alerts;
+	ses.pop_alerts(&alerts);
+	for (alert const* a : alerts)
+	{
+		if (alert_cast<file_error_alert>(a)) TEST_ERROR(a->message());
+	}
 }
 
 namespace {
