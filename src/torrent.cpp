@@ -10219,7 +10219,7 @@ namespace {
 	}
 
 	// the higher seed rank, the more important to seed
-	int torrent::seed_rank(aux::session_settings const& s) const
+	int torrent::seed_rank(aux::session_settings const& s, time_point32 const now) const
 	{
 		TORRENT_ASSERT(is_single_thread());
 		enum flags
@@ -10237,7 +10237,6 @@ namespace {
 
 		int ret = 0;
 
-		time_point32 const now = aux::time_now32();
 		seconds32 const act_time = active_time(now);
 		seconds32 const fin_time = finished_time(now);
 		seconds32 const download_time = act_time - fin_time;
@@ -12761,7 +12760,7 @@ namespace {
 		st->list_seeds = m_peer_list ? m_peer_list->num_seeds() : 0;
 		st->connect_candidates = m_peer_list ? m_peer_list->num_connect_candidates() : 0;
 		TORRENT_ASSERT(st->connect_candidates >= 0);
-		st->seed_rank = seed_rank(settings());
+		st->seed_rank = seed_rank(settings(), now);
 
 		st->all_time_upload = m_total_uploaded;
 		st->all_time_download = m_total_downloaded;
